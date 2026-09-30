@@ -15,3 +15,6 @@ frontend/dist/
 
 # Editors/OS
 .DS_Store
+
+# Private notes (dev log for interview prep) - never committed
+private/

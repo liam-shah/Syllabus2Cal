@@ -1,25 +1,11 @@
-"""Calls the Claude API with forced tool-use to extract structured events
-from raw PDF text.
+"""Sends a PDF's text and tables to Claude and gets back structured events
+using structured outputs (a Pydantic model describing the JSON shape)."""
 
-TODO:
-  - Define the `record_events` tool: an input JSON schema describing an
-    `events` array, each item with title, start_date, start_time (nullable),
-    end_time (nullable), location (nullable), description (nullable),
-    source_snippet (nullable).
-  - def extract_events(raw_text: str) -> list[dict]:
-      Call anthropic.Anthropic().messages.create(..., tools=[record_events_tool],
-      tool_choice={"type": "tool", "name": "record_events"}), then parse the
-      tool_use content block's `input` field.
-  - Handle malformed/missing responses gracefully (raise a clear exception
-    the router can turn into a useful error, rather than letting a KeyError
-    bubble up).
-
-See the `claude-api` skill / current Anthropic docs for the current model ID
-and the exact tool-use message shape before implementing.
-"""
-from pydantic import BaseModel
 from typing import Optional
+
 import anthropic
+from pydantic import BaseModel, ValidationError
+
 from app.config import settings
 
 
@@ -70,26 +56,33 @@ def format_tables(tables: list[list[list[str | None]]]) -> str:
 def extract_events(raw_text: str, tables: list[list[list[str | None]]]) -> list[dict]:
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    tables_text = format_tables(tables) or "(no tabels found)"
-    user_message = f"RAW TEXT: \n {raw_text} \n\n TABLES: \n {tables_text}"
+    tables_text = format_tables(tables) or "(no tables found)"
+    user_message = f"RAW TEXT:\n{raw_text}\n\nTABLES:\n{tables_text}"
 
+    # Streaming lets us allow a large max_tokens (thinking + ~60 events) without the
+    # SDK's non-streaming timeout limit. max_tokens is a cap, not what you're billed.
     try:
-        response = client.messages.parse(
-            model = MODEL,
-            max_tokens = 16000,
-            system = SYSTEM_PROMPT,
-            messages = [{"role": "user", "content": user_message}],
-            output_format = ExtractedEvents,
-            output_config = {"effort": "low"},
-        )
+        with client.messages.stream(
+            model=MODEL,
+            max_tokens=64000,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+            output_format=ExtractedEvents,
+            output_config={"effort": "low"},
+        ) as stream:
+            response = stream.get_final_message()
     except anthropic.APIError as e:
         raise LLMExtractionError(f"Claude API call failed: {e}") from e
+    except ValidationError as e:
+        raise LLMExtractionError(
+            f"Claude's reply wasn't complete, valid JSON (usually it was cut off by max_tokens): {e}"
+        ) from e
 
     if response.parsed_output is None:
         raise LLMExtractionError(
             f"Claude's response could not be parsed (stop_reason: {response.stop_reason})"
-        )   
-     
+        )
+
     return [event.model_dump() for event in response.parsed_output.events]
 
 

@@ -1,22 +1,20 @@
-"""TODO: mock anthropic.Anthropic().messages.create (unittest.mock.patch) to
-return a canned tool-use response (save one as
-tests/fixtures/sample_claude_response.json) and assert extract_events()
-parses it into the expected list of event dicts. Also test behavior on a
-malformed/missing-field response.
+from unittest.mock import MagicMock, patch
 
-Optional: gate a real live-API test behind an env var, e.g.
-`if not os.environ.get("RUN_LIVE_LLM_TESTS"): pytest.skip(...)`.
-"""
-
-from unittest.mock import patch, MagicMock
-from app.services.llm_extraction import extract_events, ExtractedEvents, ExtractedEvent
-
-
-from unittest.mock import patch, MagicMock
 import pytest
+
 from app.services.llm_extraction import (
-    extract_events, format_tables, ExtractedEvents, ExtractedEvent, LLMExtractionError,
+    ExtractedEvent,
+    ExtractedEvents,
+    LLMExtractionError,
+    extract_events,
+    format_tables,
 )
+
+
+def mock_stream(mock_client_cls, get_final_message):
+    # extract_events does: with client.messages.stream(...) as stream: stream.get_final_message()
+    stream = mock_client_cls.return_value.messages.stream.return_value.__enter__.return_value
+    stream.get_final_message.side_effect = get_final_message
 
 
 def test_extract_events_parses_response():
@@ -27,7 +25,7 @@ def test_extract_events_parses_response():
     ])
 
     with patch("app.services.llm_extraction.anthropic.Anthropic") as mock_client_cls:
-        mock_client_cls.return_value.messages.parse.return_value = fake_response
+        mock_stream(mock_client_cls, lambda: fake_response)
         events = extract_events("...some raw text...", [])
 
     assert events == [{
@@ -43,8 +41,19 @@ def test_extract_events_raises_when_response_unparseable():
     fake_response.stop_reason = "max_tokens"
 
     with patch("app.services.llm_extraction.anthropic.Anthropic") as mock_client_cls:
-        mock_client_cls.return_value.messages.parse.return_value = fake_response
+        mock_stream(mock_client_cls, lambda: fake_response)
         with pytest.raises(LLMExtractionError, match="max_tokens"):
+            extract_events("...some raw text...", [])
+
+
+def test_extract_events_raises_when_reply_is_cut_off():
+    def cut_off_reply():
+        # Same failure as a real max_tokens cut-off: JSON that stops mid-string.
+        return ExtractedEvents.model_validate_json('{"events": [{"title": "2c: Mutex')
+
+    with patch("app.services.llm_extraction.anthropic.Anthropic") as mock_client_cls:
+        mock_stream(mock_client_cls, cut_off_reply)
+        with pytest.raises(LLMExtractionError, match="cut off"):
             extract_events("...some raw text...", [])
 
 
