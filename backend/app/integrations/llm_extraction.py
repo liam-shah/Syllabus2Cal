@@ -1,26 +1,12 @@
 """Sends a PDF's text and tables to Claude and gets back structured events
 using structured outputs (a Pydantic model describing the JSON shape)."""
 
-from typing import Optional
-
 import anthropic
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
-
-
-class ExtractedEvent(BaseModel):
-    title: str
-    start_date: str
-    date_is_approximate: bool
-    start_time: Optional[str] = None
-    end_time: Optional[str] = None
-    location: Optional[str] = None
-    description: Optional[str] = None
-    source_snippet: Optional[str] = None
-
-class ExtractedEvents(BaseModel):
-    events: list[ExtractedEvent]
+from app.domain import EventDraft
+from app.errors import ExternalServiceError
 
 SYSTEM_PROMPT = (
     "You extract calendar events from a PDF course schedule or syllabus. "
@@ -38,13 +24,21 @@ SYSTEM_PROMPT = (
 
 MODEL = "claude-sonnet-5"
 
-class LLMExtractionError(Exception):
-    """Raised when Claude fails to extract evenets from the given text"""
+
+class ExtractionResult(BaseModel):
+    """The shape of Claude's whole reply: a list of events."""
+
+    events: list[EventDraft]
+
+
+class LLMExtractionError(ExternalServiceError):
+    """Raised when Claude fails to extract events from the given text."""
+
 
 def format_tables(tables: list[list[list[str | None]]]) -> str:
     formatted_tables = []
 
-    for table_number, table in enumerate(tables, start = 1):
+    for table_number, table in enumerate(tables, start=1):
         lines = [f"Table {table_number}:"]
         for row in table:
             cells = [(cell or "").replace("\n", " ") for cell in row]
@@ -53,7 +47,7 @@ def format_tables(tables: list[list[list[str | None]]]) -> str:
     return "\n\n".join(formatted_tables)
 
 
-def extract_events(raw_text: str, tables: list[list[list[str | None]]]) -> list[dict]:
+def extract_events(raw_text: str, tables: list[list[list[str | None]]]) -> list[EventDraft]:
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     tables_text = format_tables(tables) or "(no tables found)"
@@ -67,7 +61,7 @@ def extract_events(raw_text: str, tables: list[list[list[str | None]]]) -> list[
             max_tokens=64000,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
-            output_format=ExtractedEvents,
+            output_format=ExtractionResult,
             output_config={"effort": "low"},
         ) as stream:
             response = stream.get_final_message()
@@ -75,7 +69,7 @@ def extract_events(raw_text: str, tables: list[list[list[str | None]]]) -> list[
         raise LLMExtractionError(f"Claude API call failed: {e}") from e
     except ValidationError as e:
         raise LLMExtractionError(
-            f"Claude's reply wasn't complete, valid JSON (usually it was cut off by max_tokens): {e}"
+            f"Claude's reply didn't match the expected format (often because it was cut off by max_tokens): {e}"
         ) from e
 
     if response.parsed_output is None:
@@ -83,7 +77,4 @@ def extract_events(raw_text: str, tables: list[list[list[str | None]]]) -> list[
             f"Claude's response could not be parsed (stop_reason: {response.stop_reason})"
         )
 
-    return [event.model_dump() for event in response.parsed_output.events]
-
-
-     
+    return response.parsed_output.events

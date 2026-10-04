@@ -8,13 +8,15 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app.domain import EventStatus, UploadStatus
+
 
 class UploadOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     filename: str
-    status: str
+    status: UploadStatus
     error_message: str | None
     created_at: datetime
 
@@ -33,6 +35,6 @@ class EventOut(BaseModel):
     description: str | None
     source_snippet: str | None
     included: bool
-    status: str
+    status: EventStatus
     google_event_id: str | None
     sync_error: str | None

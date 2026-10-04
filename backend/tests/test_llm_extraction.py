@@ -1,14 +1,18 @@
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.llm_extraction import (
-    ExtractedEvent,
-    ExtractedEvents,
+from app.domain import EventDraft
+from app.integrations.llm_extraction import (
+    ExtractionResult,
     LLMExtractionError,
     extract_events,
     format_tables,
 )
+
+MIDTERM = EventDraft(title="Midterm 1", start_date=date(2026, 10, 8), date_is_approximate=False,
+                     source_snippet="Oct 08 Midterm 1")
 
 
 def mock_stream(mock_client_cls, get_final_message):
@@ -17,22 +21,15 @@ def mock_stream(mock_client_cls, get_final_message):
     stream.get_final_message.side_effect = get_final_message
 
 
-def test_extract_events_parses_response():
+def test_extract_events_returns_event_drafts():
     fake_response = MagicMock()
-    fake_response.parsed_output = ExtractedEvents(events=[
-        ExtractedEvent(title="Midterm 1", start_date="2026-10-08", date_is_approximate=False,
-                       source_snippet="Oct 08 Midterm 1"),
-    ])
+    fake_response.parsed_output = ExtractionResult(events=[MIDTERM])
 
-    with patch("app.services.llm_extraction.anthropic.Anthropic") as mock_client_cls:
+    with patch("app.integrations.llm_extraction.anthropic.Anthropic") as mock_client_cls:
         mock_stream(mock_client_cls, lambda: fake_response)
         events = extract_events("...some raw text...", [])
 
-    assert events == [{
-        "title": "Midterm 1", "start_date": "2026-10-08", "date_is_approximate": False,
-        "start_time": None, "end_time": None, "location": None, "description": None,
-        "source_snippet": "Oct 08 Midterm 1",
-    }]
+    assert events == [MIDTERM]
 
 
 def test_extract_events_raises_when_response_unparseable():
@@ -40,7 +37,7 @@ def test_extract_events_raises_when_response_unparseable():
     fake_response.parsed_output = None
     fake_response.stop_reason = "max_tokens"
 
-    with patch("app.services.llm_extraction.anthropic.Anthropic") as mock_client_cls:
+    with patch("app.integrations.llm_extraction.anthropic.Anthropic") as mock_client_cls:
         mock_stream(mock_client_cls, lambda: fake_response)
         with pytest.raises(LLMExtractionError, match="max_tokens"):
             extract_events("...some raw text...", [])
@@ -49,9 +46,9 @@ def test_extract_events_raises_when_response_unparseable():
 def test_extract_events_raises_when_reply_is_cut_off():
     def cut_off_reply():
         # Same failure as a real max_tokens cut-off: JSON that stops mid-string.
-        return ExtractedEvents.model_validate_json('{"events": [{"title": "2c: Mutex')
+        return ExtractionResult.model_validate_json('{"events": [{"title": "2c: Mutex')
 
-    with patch("app.services.llm_extraction.anthropic.Anthropic") as mock_client_cls:
+    with patch("app.integrations.llm_extraction.anthropic.Anthropic") as mock_client_cls:
         mock_stream(mock_client_cls, cut_off_reply)
         with pytest.raises(LLMExtractionError, match="cut off"):
             extract_events("...some raw text...", [])

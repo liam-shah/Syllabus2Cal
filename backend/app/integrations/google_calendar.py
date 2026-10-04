@@ -1,7 +1,7 @@
 """Google OAuth flow + Calendar API event insertion."""
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -10,14 +10,18 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
+
 from app.config import settings
+from app.domain import EventDraft
+from app.errors import ExternalServiceError
 
 CLIENT_SECRET_PATH = settings.google_client_secret_path
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 REDIRECT_URI = "http://localhost:8000/auth/google/callback"
 TIMEZONE = "America/Vancouver"
 
-class GoogleCalendarError(Exception):
+
+class GoogleCalendarError(ExternalServiceError):
     """Raised when signing in to Google or creating a calendar event fails."""
 
 
@@ -56,39 +60,42 @@ def load_credentials(credentials_json: str) -> Credentials:
     return credentials
 
 
-def build_event_body(event: dict) -> dict:
-    description = event.get("description") or ""
-    if event["date_is_approximate"]:
+def build_event_body(event: EventDraft) -> dict:
+    description = event.description or ""
+    if event.date_is_approximate:
         description = (
             "Date approximate: the PDF only gives the week, not the exact day.\n" + description
         ).strip()
 
-    body = {"summary": event["title"], "description": description}
+    body = {"summary": event.title, "description": description}
+    if event.location:
+        body["location"] = event.location
 
-    if event.get("start_time"):
-        start = datetime.strptime(f"{event['start_date']} {event['start_time']}", "%Y-%m-%d %H:%M")
-        if event.get("end_time"):
-            end = datetime.strptime(f"{event['start_date']} {event['end_time']}", "%Y-%m-%d %H:%M")
+    if event.start_time:
+        # EventDraft guarantees times are valid "HH:MM", so fromisoformat can't fail here.
+        start = datetime.combine(event.start_date, time.fromisoformat(event.start_time))
+        if event.end_time:
+            end = datetime.combine(event.start_date, time.fromisoformat(event.end_time))
         else:
             end = start + timedelta(hours=1)
         body["start"] = {"dateTime": start.isoformat(), "timeZone": TIMEZONE}
         body["end"] = {"dateTime": end.isoformat(), "timeZone": TIMEZONE}
     else:
-        start_day = date.fromisoformat(event["start_date"])
-        body["start"] = {"date": start_day.isoformat()}
-        body["end"] = {"date": (start_day + timedelta(days=1)).isoformat()}
+        # All-day events: Google treats the end date as exclusive, so end = the next day.
+        body["start"] = {"date": event.start_date.isoformat()}
+        body["end"] = {"date": (event.start_date + timedelta(days=1)).isoformat()}
 
     return body
 
 
-def insert_event(credentials: Credentials, event: dict) -> str:
+def insert_event(credentials: Credentials, event: EventDraft) -> str:
     service = build("calendar", "v3", credentials=credentials)
     try:
         created = service.events().insert(
             calendarId="primary", body=build_event_body(event)
         ).execute()
     except HttpError as e:
-        raise GoogleCalendarError(f"Google Calendar rejected the event '{event['title']}': {e}") from e
+        raise GoogleCalendarError(f"Google Calendar rejected the event '{event.title}': {e}") from e
     return created["id"]
 
 

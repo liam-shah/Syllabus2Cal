@@ -5,8 +5,10 @@ import io
 import pdfplumber
 from pdfplumber.utils.exceptions import PdfminerException
 
+from app.errors import InvalidInputError
 
-class PDFExtractionError(Exception):
+
+class PDFExtractionError(InvalidInputError):
     """Raised when a file can't be read as a PDF."""
 
 
