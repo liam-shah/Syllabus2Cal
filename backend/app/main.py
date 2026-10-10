@@ -6,9 +6,11 @@ Run from backend/ with: uvicorn app.main:app --reload --port 8000
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import models  # noqa: F401 - importing registers the tables on Base
+from app.config import settings
 from app.db import Base, engine
 from app.errors import AppError, ExternalServiceError, InvalidInputError, NotFoundError
 from app.routers import auth, events, upload
@@ -35,6 +37,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Calendar PDF Sync", lifespan=lifespan)
+
+# The frontend runs on a different origin (port 5173 locally), so browsers only let its
+# JavaScript read our responses if we explicitly allow it. Allow exactly what's used.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_url],
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Content-Type"],
+)
 
 
 @app.exception_handler(AppError)

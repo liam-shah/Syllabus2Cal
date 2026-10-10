@@ -17,7 +17,8 @@ from app.errors import ExternalServiceError
 
 CLIENT_SECRET_PATH = settings.google_client_secret_path
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
-REDIRECT_URI = "http://localhost:8000/auth/google/callback"
+# Must exactly match an "Authorized redirect URI" on the OAuth client in Google Cloud Console.
+REDIRECT_URI = f"{settings.backend_url}/auth/google/callback"
 TIMEZONE = "America/Vancouver"
 
 

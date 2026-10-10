@@ -5,11 +5,13 @@ import os
 os.environ["ANTHROPIC_API_KEY"] = "test-key"
 
 import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app import models  # noqa: E402, F401 - importing registers the tables on Base
-from app.db import Base, create_db_engine  # noqa: E402
+from app.db import Base, create_db_engine, get_db  # noqa: E402
+from app.main import app  # noqa: E402
 from app.models import User  # noqa: E402
 
 
@@ -35,3 +37,17 @@ def user(db: Session) -> User:
     db.add(user)
     db.commit()
     return user
+
+
+@pytest.fixture
+def client(db: Session) -> TestClient:
+    """An HTTP client for the real app, with every route using the test database."""
+
+    def use_test_db():
+        yield db
+
+    app.dependency_overrides[get_db] = use_test_db
+    # Deliberately not `with TestClient(app)`: that would run the app's startup code,
+    # which creates tables in the real app.db. The test database already has its tables.
+    yield TestClient(app)
+    app.dependency_overrides.clear()
