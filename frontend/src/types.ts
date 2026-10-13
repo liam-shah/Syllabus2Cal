@@ -45,6 +45,14 @@ export interface ExtractedEvent {
   sync_error: string | null
 }
 
+/** The fields a person can change (backend/app/domain.py: EventUpdate). Only sent fields change. */
+export type EventUpdate = Partial<
+  Pick<
+    ExtractedEvent,
+    'title' | 'start_date' | 'date_is_approximate' | 'start_time' | 'end_time' | 'location' | 'description' | 'included'
+  >
+>
+
 export interface AuthStatus {
   connected: boolean
 }

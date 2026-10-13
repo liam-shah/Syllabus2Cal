@@ -12,13 +12,14 @@ from fastapi.responses import JSONResponse
 from app import models  # noqa: F401 - importing registers the tables on Base
 from app.config import settings
 from app.db import Base, engine
-from app.errors import AppError, ExternalServiceError, InvalidInputError, NotFoundError
+from app.errors import AppError, ConflictError, ExternalServiceError, InvalidInputError, NotFoundError
 from app.routers import auth, events, upload
 
 # Each kind of error maps to one HTTP status. Errors themselves don't know about HTTP.
 ERROR_STATUS_CODES: dict[type[AppError], int] = {
     NotFoundError: 404,
     InvalidInputError: 400,
+    ConflictError: 409,
     ExternalServiceError: 502,
 }
 

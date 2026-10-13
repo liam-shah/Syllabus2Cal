@@ -64,6 +64,37 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/events/preview?upload_id=3')
   })
 
+  it('sends an edit as a JSON PATCH to that event', async () => {
+    const fetchMock = mockFetch(() => jsonResponse({ id: 5 }))
+
+    await api.updateEvent(5, { included: false })
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://api.test/events/5')
+    expect(init?.method).toBe('PATCH')
+    expect(init?.headers).toEqual({ 'Content-Type': 'application/json' })
+    expect(init?.body).toBe('{"included":false}')
+  })
+
+  it("turns FastAPI's validation errors into readable sentences", async () => {
+    mockFetch(() =>
+      jsonResponse(
+        {
+          detail: [
+            { loc: ['body', 'start_time'], msg: 'Value error, use 24-hour time like 14:00' },
+            { loc: ['body'], msg: "Value error, title can't be empty" },
+          ],
+        },
+        422,
+      ),
+    )
+
+    await expect(api.updateEvent(5, {})).rejects.toMatchObject({
+      status: 422,
+      message: "Start time: use 24-hour time like 14:00. Title can't be empty.",
+    })
+  })
+
   it('points the sign-in link at the backend login route', () => {
     expect(googleSignInUrl).toBe('http://api.test/auth/google/login')
   })

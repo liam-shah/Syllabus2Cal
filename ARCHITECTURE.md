@@ -54,7 +54,7 @@ backend/app/
   models.py          SQLAlchemy tables
   schemas.py         what the API sends back (separate from the tables on purpose)
   routers/           auth.py, upload.py, events.py
-  services/          upload_service.py, users.py
+  services/          upload_service.py, event_service.py, users.py
   integrations/      pdf_extraction.py, llm_extraction.py, google_calendar.py
 ```
 
@@ -92,6 +92,19 @@ classDiagram
         +EventStatus status
         +from_draft(draft)$ ExtractedEvent
         +to_draft() EventDraft
+        +apply_changes(update)
+    }
+    class EventService {
+        -Session db
+        -User user
+        +get_event(event_id) ExtractedEvent
+        +update_event(event_id, update) ExtractedEvent
+    }
+    class EventUpdate {
+        +str title
+        +date start_date
+        +bool included
+        +changes() dict
     }
     class EventDraft {
         +str title
@@ -117,6 +130,8 @@ classDiagram
     Upload "1" *-- "*" ExtractedEvent : contains
     UploadService ..> Upload : creates and reads
     ExtractedEvent ..> EventDraft : converts to/from
+    EventService ..> ExtractedEvent : finds and saves
+    ExtractedEvent ..> EventUpdate : applies
     Upload --> UploadStatus
     ExtractedEvent --> EventStatus
 ```
@@ -130,7 +145,28 @@ data it works on instead of in a separate helper module.
 
 **`UploadService`** is created fresh for every request with the database session and the
 current user passed into its constructor. It doesn't create those itself, which is what makes
-it easy to test with a throwaway database.
+it easy to test with a throwaway database. **`EventService`** works the same way for editing.
+I kept it separate from `UploadService` because "process a PDF" and "review an event" are
+different responsibilities, and syncing will get its own service too.
+
+**Where the editing rules live.** The rules for changing an event are a method on the event
+itself, `ExtractedEvent.apply_changes()`, not in the service or the router:
+
+- a synced event can't be changed (it's already in Google Calendar)
+- changing anything except the include checkbox marks the event `edited`
+- choosing a date yourself clears the "approximate" flag
+- an end time needs a start time, and can't be before it
+
+It checks everything *before* changing anything, so a rejected edit leaves the event exactly as
+it was. This is encapsulation in the CPSC 210 sense: the object protects its own invariants,
+so there's no way to edit an event that skips the rules.
+
+**`EventUpdate` vs `EventDraft`.** Both describe event fields, but they come from different
+places, so they validate differently. A strange time from Claude (`"2pm"`) is moved into the
+description so one bad field can't fail a whole upload. The same value from a person is
+rejected with a message they can fix ("Start time: use 24-hour time like 14:00."). `EventUpdate`
+also refuses fields it doesn't know about (`extra="forbid"`), so a client can't set things like
+`status` or `google_event_id` itself.
 
 ## How an upload works
 
@@ -164,6 +200,7 @@ classDiagram
     Exception <|-- AppError
     AppError <|-- NotFoundError
     AppError <|-- InvalidInputError
+    AppError <|-- ConflictError
     AppError <|-- ExternalServiceError
     InvalidInputError <|-- PDFExtractionError
     ExternalServiceError <|-- LLMExtractionError
@@ -171,7 +208,9 @@ classDiagram
 ```
 
 `main.py` registers one handler for `AppError` and maps each category to an HTTP status
-(`NotFoundError` -> 404, `InvalidInputError` -> 400, `ExternalServiceError` -> 502). This is the
+(`NotFoundError` -> 404, `InvalidInputError` -> 400, `ConflictError` -> 409,
+`ExternalServiceError` -> 502). When I added `ConflictError` for "you can't edit a synced
+event", the only other change needed was one line in that map. This is the
 same idea as the exception hierarchies from CPSC 210: code that handles the parent type
 automatically handles every subclass. Adding a new error just means picking the right parent,
 and no router needs a `try/except`. The error classes themselves don't know about HTTP, so
@@ -203,9 +242,11 @@ frontend/src/
   config.ts          reads VITE_API_URL once and fails fast if it's missing
   types.ts           the API's data types (mirrors backend/app/schemas.py)
   format.ts, url.ts  small pure helpers (date formatting, state kept in the URL)
+  eventForm.ts       the edit form's logic: event -> form values -> only the changed fields
   api/               client.ts (HTTP + ApiError), queryClient.ts (retry rules)
-  hooks/             useAuthStatus, useEvents, useUploadPdf, queryKeys
-  components/        AuthStatusBanner, SignInNotice, UploadForm, EventReviewTable, EventRow
+  hooks/             useAuthStatus, useEvents, useUploadPdf, useEventMutations, queryKeys
+  components/        AuthStatusBanner, SignInNotice, UploadForm, EventReviewTable, EventRow,
+                     EventEditForm
 ```
 
 A few decisions I'd point out:
@@ -226,6 +267,22 @@ A few decisions I'd point out:
 - **Dates are parsed carefully.** `new Date("2026-09-15")` means midnight *UTC*, which is still
   Sep 14 in Vancouver, so every date would show a day early. `formatDate` builds the date from
   its parts instead, and the tests run in Vancouver time so this bug can't sneak back in.
+
+### Editing events
+
+- **The include checkbox is optimistic.** It changes the moment you click, before the server
+  replies, and rolls back (with a message) if the save fails. On failure it undoes only *that*
+  event: restoring a snapshot of the whole list would also undo other boxes ticked meanwhile.
+  The checkbox is disabled while its own save is running, so two clicks can't race.
+- **The edit form is not optimistic.** It waits for the server, so a validation error can be
+  shown inside the form and the form stays open to fix it.
+- **Only changed fields are sent.** `buildEventUpdate` compares the form with the event and
+  sends just the difference. The request says exactly what the user did, and an untouched field
+  can't overwrite a newer value.
+- **After a save, only that one event is replaced in the cache**, using the server's copy,
+  instead of reloading all ~60 events.
+- **Each row owns its own mutations**, so "Saving…" and errors belong to that row. The table
+  passes each row its `uploadId`, so rows update the exact cache entry the table reads.
 
 ## How the two halves connect
 
@@ -262,6 +319,10 @@ Every URL that changes between environments is a setting (`FRONTEND_URL`, `BACKE
 JavaScript sent to the browser, so they're public and must never hold a secret.
 
 ## Design decisions
+
+**Approximate dates start unticked.** When the PDF only gives a week, Claude has to pick a
+placeholder day. Those events start excluded, so nothing lands on a guessed day unless I fix the
+date or tick it on purpose. The safe choice is the default, but it's only a default.
 
 **One transaction per upload (all or nothing).** An upload and its ~60 events are saved in a
 single commit. If something fails halfway, nothing is saved, so there are never half-finished
@@ -323,5 +384,8 @@ them out.
   step catches this, but improving the prompt is ongoing.
 - **Hand-written frontend types.** `types.ts` is kept in sync with the backend by hand. Generating
   it from the backend's OpenAPI schema (`/openapi.json`) would make drift impossible.
-- **Editing and syncing.** The review table is read-only for now; editing events and syncing them
-  to Google Calendar are the next features.
+- **Syncing.** Events can be reviewed and edited, but syncing them to Google Calendar is the
+  next feature.
+- **Lost updates.** If the same event were edited in two tabs at once, the last save would win.
+  Sending only changed fields makes this much less likely, and a version number checked on each
+  save (optimistic locking) would rule it out if it ever mattered.

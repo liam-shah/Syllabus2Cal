@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User
+from app.services.event_service import EventService
 from app.services.upload_service import UploadService
 from app.services.users import get_local_user
 
@@ -24,3 +25,10 @@ def get_upload_service(
     user: User = Depends(get_current_user),
 ) -> UploadService:
     return UploadService(db, user)
+
+
+def get_event_service(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> EventService:
+    return EventService(db, user)

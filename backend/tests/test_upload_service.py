@@ -39,7 +39,12 @@ def test_process_pdf_saves_the_upload_and_its_events(db, user):
 
     assert upload.status is UploadStatus.EXTRACTED
     assert [event.title for event in upload.events] == [draft.title for draft in DRAFTS]
-    assert all(e.status is EventStatus.PENDING_REVIEW and e.included for e in upload.events)
+    assert all(e.status is EventStatus.PENDING_REVIEW for e in upload.events)
+    # Exact dates start ticked, approximate ones unticked (DRAFTS has one of each).
+    assert {e.title: e.included for e in upload.events} == {
+        "Lecture 1b: Pointers": True,
+        "Lab L1: Numbers & Memory": False,
+    }
 
     raw_text, tables = mock_extract.call_args.args  # Claude was given the real PDF's text and tables
     assert "Sep 14-18" in raw_text and len(tables) >= 1

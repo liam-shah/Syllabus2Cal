@@ -1,0 +1,59 @@
+"""PATCH /events/{event_id} through the real app (HTTP status codes and response shapes)."""
+
+from datetime import date
+
+import pytest
+
+from app.domain import EventDraft, EventStatus, UploadStatus
+from app.models import ExtractedEvent, Upload
+from app.services.users import get_local_user
+
+DRAFT = EventDraft(title="Lab L1", start_date=date(2026, 9, 21), date_is_approximate=True, start_time="10:00")
+
+
+@pytest.fixture
+def event(db) -> ExtractedEvent:
+    # Owned by the same user the routes act as (get_current_user -> get_local_user).
+    upload = Upload(user=get_local_user(db), filename="test.pdf", raw_text="...", status=UploadStatus.EXTRACTED)
+    upload.events = [ExtractedEvent.from_draft(DRAFT)]
+    db.add(upload)
+    db.commit()
+    return upload.events[0]
+
+
+def patch(client, event_id: int, body: dict):
+    return client.patch(f"/events/{event_id}", json=body)
+
+
+def test_patch_returns_the_updated_event(client, event):
+    response = patch(client, event.id, {"start_date": "2026-09-23", "included": True})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["start_date"], body["date_is_approximate"], body["included"]) == ("2026-09-23", False, True)
+    assert body["status"] == "edited"
+
+
+def test_invalid_input_is_a_422_listing_the_problem(client, event):
+    response = patch(client, event.id, {"start_time": "2pm"})
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], list)  # FastAPI's validation-error shape
+
+
+def test_a_rule_broken_across_fields_is_a_400(client, event):
+    response = patch(client, event.id, {"end_time": "09:00"})  # starts at 10:00
+    assert response.status_code == 400
+    assert response.json() == {"detail": "The end time can't be before the start time."}
+
+
+def test_editing_a_synced_event_is_a_409(client, db, event):
+    event.status = EventStatus.SYNCED
+    db.commit()
+
+    response = patch(client, event.id, {"included": False})
+    assert response.status_code == 409
+    assert "already in Google Calendar" in response.json()["detail"]
+
+
+def test_missing_event_is_a_404(client):
+    assert patch(client, 999, {"included": True}).status_code == 404

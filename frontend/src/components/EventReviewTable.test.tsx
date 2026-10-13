@@ -1,4 +1,5 @@
 import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import { makeEvent } from '../test/factories'
@@ -11,6 +12,7 @@ const LAB = makeEvent({
   title: 'Lab L1: Numbers & Memory',
   start_date: '2026-09-21',
   date_is_approximate: true,
+  included: false, // approximate dates start unticked
   location: 'ICCS 005',
 })
 const LECTURE = makeEvent({ id: 1, title: 'Lecture 1b: Pointers', start_date: '2026-10-01', start_time: '14:00' })
@@ -50,7 +52,20 @@ describe('EventReviewTable', () => {
     const [labRow, lectureRow] = await findEventRows()
     expect(within(labRow).getByText('Approx. date')).toBeInTheDocument()
     expect(within(lectureRow).queryByText('Approx. date')).not.toBeInTheDocument()
-    expect(screen.getByText(/2 events · 1 with approximate dates/)).toBeInTheDocument()
+    expect(screen.getByText(/1 with approximate dates/)).toBeInTheDocument()
+  })
+
+  it('counts how many events are selected, and updates as soon as one is ticked', async () => {
+    const user = userEvent.setup()
+    mockFetch((_url, init) =>
+      init?.method === 'PATCH' ? jsonResponse({ ...LAB, included: true }) : jsonResponse([LAB, LECTURE]),
+    )
+    renderWithQueryClient(<EventReviewTable uploadId={7} />)
+
+    expect(await screen.findByText(/1 of 2 events selected/)).toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox', { name: 'Include Lab L1: Numbers & Memory' }))
+    // find* (which waits) rather than get*: the optimistic update lands a moment after the click.
+    expect(await screen.findByText(/2 of 2 events selected/)).toBeInTheDocument()
   })
 
   it('says so when the PDF had no events', async () => {

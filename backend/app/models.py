@@ -1,13 +1,14 @@
 """SQLAlchemy models: how users, uploads, and events are stored in the database."""
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import StrEnum
 
 from sqlalchemy import Enum, ForeignKey, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.domain import EventDraft, EventStatus, UploadStatus
+from app.domain import EventDraft, EventStatus, EventUpdate, UploadStatus
+from app.errors import ConflictError, InvalidInputError
 
 
 def status_column_type(enum_class: type[StrEnum], name: str) -> Enum:
@@ -77,7 +78,44 @@ class ExtractedEvent(Base):
     def from_draft(cls, draft: EventDraft) -> "ExtractedEvent":
         # EventDraft's fields match these columns one-to-one; if they ever drift apart,
         # this raises a TypeError immediately instead of silently dropping data.
-        return cls(**draft.model_dump())
+        # Approximate dates start unticked: nothing lands on a guessed day unless the user
+        # fixes the date or ticks it on purpose.
+        return cls(**draft.model_dump(), included=not draft.date_is_approximate)
 
     def to_draft(self) -> EventDraft:
         return EventDraft.model_validate(self, from_attributes=True)
+
+    def apply_changes(self, update: EventUpdate) -> None:
+        """Apply a user's edit, enforcing the rules every edit must follow.
+
+        Everything is checked before anything changes, so a rejected edit leaves the
+        event exactly as it was.
+        """
+        if self.status is EventStatus.SYNCED:
+            raise ConflictError("This event is already in Google Calendar, so it can't be changed here.")
+
+        changes = update.changes()
+        # Choosing a date yourself makes it exact - that's the point of fixing an approximate one.
+        if "start_date" in changes and "date_is_approximate" not in changes:
+            changes["date_is_approximate"] = False
+
+        self._check_times(
+            start_time=changes.get("start_time", self.start_time),
+            end_time=changes.get("end_time", self.end_time),
+        )
+
+        for field_name, value in changes.items():
+            setattr(self, field_name, value)
+
+        # Ticking/unticking is a choice about syncing, not a change to the event itself.
+        if changes.keys() - {"included"}:
+            self.status = EventStatus.EDITED  # also moves SYNC_FAILED back, ready to retry
+
+    @staticmethod
+    def _check_times(start_time: str | None, end_time: str | None) -> None:
+        if end_time is None:
+            return
+        if start_time is None:
+            raise InvalidInputError("An end time needs a start time.")
+        if time.fromisoformat(end_time) < time.fromisoformat(start_time):
+            raise InvalidInputError("The end time can't be before the start time.")

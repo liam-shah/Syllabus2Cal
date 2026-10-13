@@ -38,29 +38,35 @@ export default function EventReviewTable({ uploadId }: EventReviewTableProps) {
     )
   }
 
+  // Worked out from the cached events on every render, so it updates the moment a box is
+  // ticked (the optimistic update changes the cache straight away).
+  const includedCount = events.data.filter((event) => event.included).length
   const approximateCount = events.data.filter((event) => event.date_is_approximate).length
 
   return (
     <ReviewSection>
       <p className="mt-1 text-sm text-slate-600">
-        {plural(events.data.length, 'event')}
-        {approximateCount > 0 && ` · ${approximateCount} with approximate dates (check these before syncing)`}
+        {includedCount} of {plural(events.data.length, 'event')} selected for your calendar
+        {approximateCount > 0 &&
+          ` · ${approximateCount} with approximate dates (unticked until you fix the date or tick them)`}
       </p>
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
           <caption className="sr-only">Events extracted from the uploaded PDF</caption>
           <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
             <tr>
+              <th scope="col" className="px-3 py-2">Include</th>
               <th scope="col" className="px-3 py-2">Date</th>
               <th scope="col" className="px-3 py-2">Event</th>
               <th scope="col" className="px-3 py-2">Details</th>
               <th scope="col" className="px-3 py-2">Source text</th>
+              <th scope="col" className="px-3 py-2"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {/* key: a stable id lets React keep each row's identity across re-renders. */}
             {events.data.map((event) => (
-              <EventRow key={event.id} event={event} />
+              <EventRow key={event.id} event={event} uploadId={uploadId} />
             ))}
           </tbody>
         </table>
