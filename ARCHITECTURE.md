@@ -1,8 +1,7 @@
 # Architecture
 
-This document explains how Calendar PDF Sync is put together and why I made the design
-choices I did. It's meant to be readable in a few minutes: the big picture first, then the
-main classes, then the decisions and trade-offs.
+This document explains how Syllabus2Cal is put together and why I made the design
+choices I did.
 
 ## What the app does
 
@@ -178,6 +177,90 @@ automatically handles every subclass. Adding a new error just means picking the 
 and no router needs a `try/except`. The error classes themselves don't know about HTTP, so
 they could be reused by something that isn't a web server.
 
+## The frontend
+
+The frontend is a React + TypeScript app (built with Vite) in `frontend/`. I split it the same
+way as the backend, and again each layer only uses the one below it:
+
+```mermaid
+flowchart TD
+    Components["components/ - what's on screen"] --> Hooks["hooks/ - what data to load"]
+    Hooks --> Client["api/client.ts - every HTTP call"]
+    Client --> Backend["FastAPI backend"]
+```
+
+| Frontend layer | Backend equivalent | Example |
+|---|---|---|
+| `components/` | routers | `EventReviewTable` shows the events, plus its loading and error states |
+| `hooks/` | services | `useEvents(uploadId)` decides what to load and how it's cached |
+| `api/client.ts` | integrations | `api.uploadPdf(file)` - the only place in the frontend that calls `fetch` |
+| `types.ts`, `config.ts` | `schemas.py`, `config.py` | the `ExtractedEvent` type, `VITE_API_URL` |
+
+```
+frontend/src/
+  main.tsx           starts the app and sets up the TanStack Query cache
+  App.tsx            puts the page together; remembers which upload is on screen
+  config.ts          reads VITE_API_URL once and fails fast if it's missing
+  types.ts           the API's data types (mirrors backend/app/schemas.py)
+  format.ts, url.ts  small pure helpers (date formatting, state kept in the URL)
+  api/               client.ts (HTTP + ApiError), queryClient.ts (retry rules)
+  hooks/             useAuthStatus, useEvents, useUploadPdf, queryKeys
+  components/        AuthStatusBanner, SignInNotice, UploadForm, EventReviewTable, EventRow
+```
+
+A few decisions I'd point out:
+
+- **TanStack Query for server data.** It tracks loading and error state, caches results,
+  cancels requests that aren't needed any more, and retries. I set the retry rules myself:
+  only retry failures that might be temporary (no connection, or a 5xx), and **never** retry an
+  upload automatically, because an upload costs a Claude call and a retry could create a
+  duplicate.
+- **One error type.** Every failed request becomes an `ApiError` carrying the backend's
+  `{"detail": ...}` message, so errors reach the screen in exactly one way.
+- **Impossible states can't be represented.** A query's result is *loading*, *error*, or
+  *success* - never two at once - and TypeScript only lets a component use the data after it
+  has handled the other two. Statuses are string unions (`'pending_review' | 'synced' | ...`)
+  that mirror the backend's enums.
+- **Some state lives in the URL.** The upload being reviewed is kept as `?upload=3`, so
+  refreshing the page doesn't lose it (and doesn't mean paying for another extraction).
+- **Dates are parsed carefully.** `new Date("2026-09-15")` means midnight *UTC*, which is still
+  Sep 14 in Vancouver, so every date would show a day early. `formatDate` builds the date from
+  its parts instead, and the tests run in Vancouver time so this bug can't sneak back in.
+
+## How the two halves connect
+
+The frontend (port 5173 locally) and backend (port 8000) are different *origins*, so browsers
+block the frontend's JavaScript from reading API responses unless the backend allows it. That's
+CORS. The backend allows exactly one origin (`FRONTEND_URL`) and only the methods the app uses.
+I chose this over a dev proxy because it's how a separately hosted frontend and backend work in
+production. Something that surprised me: CORS isn't a firewall - the request still reaches the
+server, the browser just won't let another site's JavaScript *read* the response.
+
+Google sign-in is different from the API calls because it's a *page navigation*: the whole
+browser goes to Google and back, so the backend answers with redirects instead of JSON.
+
+```mermaid
+sequenceDiagram
+    participant U as Browser
+    participant B as Backend
+    participant G as Google
+    U->>B: click "Connect Google Calendar" (/auth/google/login)
+    B-->>U: redirect to Google (with a state value and a PKCE challenge)
+    U->>G: sign in and approve calendar access
+    G-->>U: redirect to /auth/google/callback?code=...&state=...
+    U->>B: callback
+    B->>G: swap the code (plus the PKCE verifier) for tokens
+    B-->>U: redirect to the frontend: /?google=connected
+```
+
+If anything goes wrong, the callback redirects to `/?google=error&reason=<code>` with a fixed
+code like `access_denied`, never raw error text, and the frontend turns the code into a
+friendly message.
+
+Every URL that changes between environments is a setting (`FRONTEND_URL`, `BACKEND_URL`,
+`VITE_API_URL`), so deploying shouldn't need any code changes. `VITE_` variables end up in the
+JavaScript sent to the browser, so they're public and must never hold a secret.
+
 ## Design decisions
 
 **One transaction per upload (all or nothing).** An upload and its ~60 events are saved in a
@@ -218,7 +301,12 @@ them out.
 - There are tests at each layer: the domain types, the models (including that the database
   really rejects a bad status), the integrations, and `UploadService`'s whole workflow
   including the failure paths.
+- HTTP-level tests go through the real app with FastAPI's `TestClient`, pointed at the test
+  database, to check things like the sign-in redirects and that CORS refuses other sites.
 - Run them from `backend/` with `pytest`.
+- The frontend uses Vitest and React Testing Library. Tests render real components and only
+  fake the network (`fetch`), so they check what a user would see rather than internal details.
+  Run them from `frontend/` with `npm test`.
 
 ## Known limitations and future work
 
@@ -233,3 +321,7 @@ them out.
   job with a progress indicator would be a better experience.
 - **Table reading.** Claude sometimes misreads which weekday a column belongs to. The review
   step catches this, but improving the prompt is ongoing.
+- **Hand-written frontend types.** `types.ts` is kept in sync with the backend by hand. Generating
+  it from the backend's OpenAPI schema (`/openapi.json`) would make drift impossible.
+- **Editing and syncing.** The review table is read-only for now; editing events and syncing them
+  to Google Calendar are the next features.
