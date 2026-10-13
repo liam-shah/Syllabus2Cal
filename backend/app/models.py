@@ -1,7 +1,7 @@
 """SQLAlchemy models: how users, uploads, and events are stored in the database."""
 
 import uuid
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 
 from sqlalchemy import Enum, ForeignKey, String, Text, func
@@ -24,14 +24,64 @@ def status_column_type(enum_class: type[StrEnum], name: str) -> Enum:
     )
 
 
+def utc_now() -> datetime:
+    """The current time in UTC, without a timezone attached - how every time is stored here.
+
+    SQLite has no timezone-aware column type, so all times are stored as plain UTC.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Who the user is: Google's permanent ID for their account (the ID token's "sub" claim).
+    # Not the email address, which a person can change. Nullable only because the user row
+    # from before accounts existed has no Google identity.
+    google_subject: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
+    email: Mapped[str | None]  # for display only; never used to look anyone up
     google_credentials_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     uploads: Mapped[list["Upload"]] = relationship(back_populates="user")
+    login_sessions: Mapped[list["LoginSession"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+    @property
+    def is_calendar_connected(self) -> bool:
+        return self.google_credentials_json is not None
+
+
+class LoginSession(Base):
+    """One signed-in browser. The browser holds a random token; the database holds its hash.
+
+    Keeping sessions in the database (rather than only in a signed cookie) means signing out
+    really ends the session: a copied cookie stops working the moment its row is deleted.
+    """
+
+    __tablename__ = "login_sessions"
+
+    LIFETIME = timedelta(days=30)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # SHA-256 of the token, as 64 hex characters. If the database ever leaked, these
+    # couldn't be turned back into working cookies.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(default=utc_now)
+    expires_at: Mapped[datetime]
+
+    user: Mapped["User"] = relationship(back_populates="login_sessions")
+
+    @classmethod
+    def start(cls, user: User, token_hash: str) -> "LoginSession":
+        now = utc_now()
+        return cls(user=user, token_hash=token_hash, created_at=now, expires_at=now + cls.LIFETIME)
+
+    def has_expired(self) -> bool:
+        return utc_now() >= self.expires_at
 
 
 class Upload(Base):

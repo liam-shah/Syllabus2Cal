@@ -18,7 +18,9 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${config.apiUrl}${path}`, init)
+    // credentials: 'include' sends the session cookie along. The backend runs on another
+    // origin (port 8000), and fetch leaves cookies off cross-origin requests unless asked.
+    response = await fetch(`${config.apiUrl}${path}`, { ...init, credentials: 'include' })
   } catch (error) {
     // Cancelled on purpose (e.g. the component unmounted): let the caller see the abort.
     if (error instanceof DOMException && error.name === 'AbortError') throw error
@@ -28,6 +30,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw new ApiError(response.status, await readErrorDetail(response))
   }
+  if (response.status === 204) return undefined as T // "No Content": nothing to parse
   // Trusts our own backend's response shape; the types mirror backend/app/schemas.py.
   return (await response.json()) as T
 }
@@ -71,7 +74,11 @@ function withFullStop(text: string): string {
 
 export const api = {
   getAuthStatus(signal?: AbortSignal): Promise<AuthStatus> {
-    return request<AuthStatus>('/auth/google/status', { signal })
+    return request<AuthStatus>('/auth/status', { signal })
+  },
+
+  signOut(): Promise<void> {
+    return request<void>('/auth/sign-out', { method: 'POST' })
   },
 
   uploadPdf(file: File): Promise<Upload> {
@@ -101,5 +108,8 @@ export const api = {
   },
 }
 
-/** Sign-in is a page navigation (the browser leaves the app), not a fetch - so just a URL. */
+// Signing in is a page navigation (the browser leaves the app for Google), not a fetch - so
+// these are just URLs for links.
 export const googleSignInUrl = `${config.apiUrl}/auth/google/login`
+/** Same sign-in, but Google shows the permissions screen again: the way to (re)connect the calendar. */
+export const googleConnectCalendarUrl = `${googleSignInUrl}?connect_calendar=true`

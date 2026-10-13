@@ -5,6 +5,7 @@ import { readSignInResult, readUploadId, withUploadId, withoutSignInParams } fro
 describe('readSignInResult', () => {
   it('reads a successful sign-in', () => {
     expect(readSignInResult('?google=connected')).toEqual({ outcome: 'connected' })
+    expect(readSignInResult('?google=no_calendar')).toEqual({ outcome: 'no_calendar' })
   })
 
   it('reads a known failure reason', () => {

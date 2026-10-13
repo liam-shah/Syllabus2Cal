@@ -9,6 +9,11 @@ describe('SignInNotice', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Google Calendar connected')
   })
 
+  it('says when signing in did not connect the calendar', () => {
+    render(<SignInNotice result={{ outcome: 'no_calendar' }} />)
+    expect(screen.getByRole('status')).toHaveTextContent("isn't allowed to add events to your calendar yet")
+  })
+
   it.each([
     ['access_denied', 'cancelled'],
     ['google_error', 'Google reported a problem'],

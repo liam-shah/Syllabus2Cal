@@ -53,6 +53,10 @@ export type EventUpdate = Partial<
   >
 >
 
-export interface AuthStatus {
-  connected: boolean
-}
+/**
+ * Who is signed in (backend/app/schemas.py: AuthStatusOut). A discriminated union: checking
+ * `signed_in` tells TypeScript whether `email` and `calendar_connected` are there.
+ */
+export type AuthStatus =
+  | { signed_in: false }
+  | { signed_in: true; email: string; calendar_connected: boolean }

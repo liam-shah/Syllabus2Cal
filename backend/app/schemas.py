@@ -38,3 +38,9 @@ class EventOut(BaseModel):
     status: EventStatus
     google_event_id: str | None
     sync_error: str | None
+
+
+class AuthStatusOut(BaseModel):
+    signed_in: bool
+    email: str | None = None
+    calendar_connected: bool = False

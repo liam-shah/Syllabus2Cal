@@ -1,4 +1,7 @@
-"""Google OAuth flow + Calendar API event insertion."""
+"""Google Calendar API: creating events with a user's saved Google credentials.
+
+Signing in (and getting those credentials in the first place) is in google_sign_in.py.
+"""
 
 import json
 from datetime import datetime, time, timedelta
@@ -6,55 +9,39 @@ from datetime import datetime, time, timedelta
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
-from app.config import settings
 from app.domain import EventDraft
 from app.errors import ExternalServiceError
 
-CLIENT_SECRET_PATH = settings.google_client_secret_path
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
-# Must exactly match an "Authorized redirect URI" on the OAuth client in Google Cloud Console.
-REDIRECT_URI = f"{settings.backend_url}/auth/google/callback"
+# Create, change and delete events - but not read the rest of the user's calendar.
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 TIMEZONE = "America/Vancouver"
 
 
 class GoogleCalendarError(ExternalServiceError):
-    """Raised when signing in to Google or creating a calendar event fails."""
+    """Raised when creating a calendar event fails."""
 
 
 class GoogleAuthError(GoogleCalendarError):
     """Google no longer accepts the saved sign-in. Every further request would fail the same way."""
 
 
-def build_flow(code_verifier: str | None = None) -> Flow:
-    return Flow.from_client_secrets_file(
-        CLIENT_SECRET_PATH,
-        scopes = SCOPES,
-        redirect_uri = REDIRECT_URI,
-        code_verifier = code_verifier,
-    )
+def has_calendar_access(credentials: Credentials) -> bool:
+    """Whether these credentials can still be used for the calendar after the first hour.
 
-def get_authorization_url() -> tuple[str, str, str]:
-    flow = build_flow()
-    url, state = flow.authorization_url(prompt = "consent")
-    return url, state, flow.code_verifier
-
-
-def exchange_code_for_credentials(code: str, code_verifier: str) -> Credentials:
-    flow = build_flow(code_verifier=code_verifier)
-    try:
-        flow.fetch_token(code=code)
-    except OAuth2Error as e:
-        raise GoogleCalendarError(f"Could not finish Google sign-in: {e}") from e
-    return flow.credentials
+    Needs the calendar permission *and* a refresh token: the access token alone expires
+    after an hour, and Google only sends a refresh token when the consent screen was shown.
+    """
+    granted = credentials.granted_scopes or []
+    if isinstance(granted, str):
+        granted = granted.split()
+    return CALENDAR_SCOPE in granted and credentials.refresh_token is not None
 
 
 def load_credentials(credentials_json: str) -> Credentials:
-    credentials = Credentials.from_authorized_user_info(json.loads(credentials_json), SCOPES)
+    credentials = Credentials.from_authorized_user_info(json.loads(credentials_json), [CALENDAR_SCOPE])
     if credentials.expired and credentials.refresh_token:
         try:
             credentials.refresh(Request())

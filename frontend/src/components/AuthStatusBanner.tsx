@@ -1,42 +1,50 @@
-import { googleSignInUrl } from '../api/client'
-import { useAuthStatus } from '../hooks/useAuthStatus'
+import { googleConnectCalendarUrl } from '../api/client'
+import { useSignOut } from '../hooks/useSignOut'
+import type { AuthStatus } from '../types'
 
-/** Shows whether Google Calendar is connected, with a button to connect (or reconnect). */
-export default function AuthStatusBanner() {
-  const status = useAuthStatus()
+type SignedIn = Extract<AuthStatus, { signed_in: true }>
 
-  // The query result is a discriminated union: once loading and error are handled,
-  // TypeScript knows status.data is defined.
-  if (status.isPending) {
-    return <p className="text-sm text-slate-500">Checking Google Calendar connection…</p>
-  }
+interface AuthStatusBannerProps {
+  account: SignedIn
+}
 
-  if (status.isError) {
-    return (
-      <p role="alert" className="text-sm text-red-700">
-        Couldn't check the Google connection: {status.error.message}
-      </p>
-    )
-  }
-
-  if (status.data.connected) {
-    return (
-      <div className="flex items-center gap-3 text-sm">
-        <span className="font-medium text-green-700">✓ Google Calendar connected</span>
-        {/* Google's Testing mode expires access after 7 days, so reconnecting is a normal action. */}
-        <a href={googleSignInUrl} className="text-slate-500 underline hover:text-slate-800">
-          Reconnect
-        </a>
-      </div>
-    )
-  }
+/** Who is signed in, whether their Google Calendar is connected, and a way to sign out. */
+export default function AuthStatusBanner({ account }: AuthStatusBannerProps) {
+  const signOut = useSignOut()
 
   return (
-    <a
-      href={googleSignInUrl}
-      className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-    >
-      Connect Google Calendar
-    </a>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+      {account.calendar_connected ? (
+        <span className="flex items-center gap-2">
+          <span className="font-medium text-green-700">✓ Google Calendar connected</span>
+          {/* Google's Testing mode expires access after 7 days, so reconnecting is a normal action. */}
+          <a href={googleConnectCalendarUrl} className="text-slate-500 underline hover:text-slate-800">
+            Reconnect
+          </a>
+        </span>
+      ) : (
+        <a
+          href={googleConnectCalendarUrl}
+          className="rounded-md bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700"
+        >
+          Connect Google Calendar
+        </a>
+      )}
+
+      <span className="text-slate-600">{account.email}</span>
+      <button
+        type="button"
+        onClick={() => signOut.mutate()}
+        disabled={signOut.isPending}
+        className="text-slate-500 underline hover:text-slate-800 disabled:cursor-wait"
+      >
+        {signOut.isPending ? 'Signing out…' : 'Sign out'}
+      </button>
+      {signOut.isError && (
+        <span role="alert" className="text-red-700">
+          Couldn't sign out: {signOut.error.message}
+        </span>
+      )}
+    </div>
   )
 }

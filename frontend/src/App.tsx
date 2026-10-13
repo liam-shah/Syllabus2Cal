@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import AuthStatusBanner from './components/AuthStatusBanner'
 import EventReviewTable from './components/EventReviewTable'
 import SignInNotice from './components/SignInNotice'
+import SignInScreen from './components/SignInScreen'
 import UploadForm from './components/UploadForm'
+import { useAuthStatus } from './hooks/useAuthStatus'
 import { readSignInResult, readUploadId, withUploadId, withoutSignInParams } from './url'
 
 export default function App() {
@@ -11,6 +13,7 @@ export default function App() {
   // because React's StrictMode may call them twice in development.
   const [signInResult] = useState(() => readSignInResult(window.location.search))
   const [uploadId, setUploadId] = useState(() => readUploadId(window.location.search))
+  const auth = useAuthStatus()
 
   // Keep the URL in step with the page: drop the one-off sign-in message and remember which
   // upload is on screen, so a refresh doesn't lose it. replaceState (not pushState) means the
@@ -25,14 +28,26 @@ export default function App() {
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-4 py-4">
           <h1 className="text-xl font-semibold">Syllabus2Cal</h1>
-          <AuthStatusBanner />
+          {auth.data?.signed_in === true && <AuthStatusBanner account={auth.data} />}
         </div>
       </header>
 
       <main className="mx-auto max-w-5xl space-y-6 px-4 py-8">
         <SignInNotice result={signInResult} />
-        <UploadForm onUploaded={(upload) => setUploadId(upload.id)} />
-        {uploadId !== null && <EventReviewTable uploadId={uploadId} />}
+        {auth.isPending ? (
+          <p className="text-sm text-slate-500">Loading…</p>
+        ) : auth.isError ? (
+          <p role="alert" className="text-sm text-red-700">
+            Couldn't check whether you're signed in: {auth.error.message}
+          </p>
+        ) : !auth.data.signed_in ? (
+          <SignInScreen />
+        ) : (
+          <>
+            <UploadForm onUploaded={(upload) => setUploadId(upload.id)} />
+            {uploadId !== null && <EventReviewTable uploadId={uploadId} />}
+          </>
+        )}
       </main>
     </div>
   )

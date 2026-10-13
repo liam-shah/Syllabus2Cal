@@ -5,7 +5,7 @@ choices I did.
 
 ## What the app does
 
-You upload a course schedule or syllabus PDF. The backend pulls the text and tables out of
+You sign in with Google, then upload a course schedule or syllabus PDF. The backend pulls the text and tables out of
 it, asks Claude to turn them into structured calendar events, and saves them. You review the
 events (fix dates, untick ones you don't want), then sync the rest to Google Calendar.
 
@@ -29,7 +29,7 @@ flowchart TD
 | `routers/` | Read the HTTP request, call a service, return a response | `POST /uploads` reads the file and enforces the 10 MB limit |
 | `services/` | The app's own rules and workflows | `UploadService.process_pdf()` - extract, save, handle failures |
 | `integrations/` | Wrap someone else's system | `llm_extraction.py` talks to Claude, `google_calendar.py` to Google |
-| `models.py` | How data is stored | `Upload`, `ExtractedEvent`, `User` tables |
+| `models.py` | How data is stored | `User`, `LoginSession`, `Upload`, `ExtractedEvent` tables |
 | `domain.py`, `errors.py` | Types every layer shares | `EventDraft`, `EventStatus`, the exception hierarchy |
 
 The rule is that imports only point *down*. A router can import a service, but a service
@@ -48,14 +48,16 @@ backend/app/
   main.py            wires everything together: routers, error handlers, startup
   config.py          settings loaded from .env (API keys, database URL)
   db.py              database engine and sessions
-  dependencies.py    FastAPI dependencies: the current user, services
+  dependencies.py    FastAPI dependencies: the signed-in user, services
+  session_cookie.py  what the browser's session cookie holds (the only file that knows)
   domain.py          EventDraft + status enums
   errors.py          the exception hierarchy
   models.py          SQLAlchemy tables
   schemas.py         what the API sends back (separate from the tables on purpose)
   routers/           auth.py, upload.py, events.py
-  services/          upload_service.py, event_service.py, users.py
-  integrations/      pdf_extraction.py, llm_extraction.py, google_calendar.py
+  services/          auth_service.py, upload_service.py, event_service.py, sync_service.py
+  integrations/      pdf_extraction.py, llm_extraction.py, google_sign_in.py, google_calendar.py
+backend/migrations/  Alembic: env.py + one file per schema change in versions/
 ```
 
 ## Main classes
@@ -74,7 +76,22 @@ classDiagram
     }
     class User {
         +int id
+        +str google_subject
+        +str email
         +str google_credentials_json
+        +is_calendar_connected bool
+    }
+    class LoginSession {
+        +str token_hash
+        +datetime expires_at
+        +start(user, token_hash)$ LoginSession
+        +has_expired() bool
+    }
+    class AuthService {
+        -Session db
+        +sign_in(google_sign_in) (User, token)
+        +user_for_token(token) User
+        +sign_out(token)
     }
     class Upload {
         +int id
@@ -106,6 +123,16 @@ classDiagram
         +bool included
         +changes() dict
     }
+    class SyncService {
+        -UploadService uploads
+        -CalendarFactory open_calendar
+        +sync_upload(upload_id) list~ExtractedEvent~
+    }
+    class GoogleCalendarClient {
+        +from_credentials_json(json)$ GoogleCalendarClient
+        +insert_event(draft, event_id) str
+        +credentials_json str
+    }
     class EventDraft {
         +str title
         +date start_date
@@ -127,11 +154,15 @@ classDiagram
         SYNC_FAILED
     }
     User "1" --> "*" Upload : owns
+    User "1" *-- "*" LoginSession : signed in on
+    AuthService ..> LoginSession : starts and ends
     Upload "1" *-- "*" ExtractedEvent : contains
     UploadService ..> Upload : creates and reads
     ExtractedEvent ..> EventDraft : converts to/from
     EventService ..> ExtractedEvent : finds and saves
     ExtractedEvent ..> EventUpdate : applies
+    SyncService --> UploadService : uses
+    SyncService ..> GoogleCalendarClient : sends events through
     Upload --> UploadStatus
     ExtractedEvent --> EventStatus
 ```
@@ -191,6 +222,44 @@ sequenceDiagram
     R-->>B: 201 Created
 ```
 
+## How a sync works
+
+`SyncService` sends every event that's ticked and not yet synced, one at a time:
+
+```mermaid
+sequenceDiagram
+    participant S as SyncService
+    participant D as Database
+    participant G as Google Calendar
+    loop each ticked, not-yet-synced event
+        S->>D: save its sync_key (chosen once, reused on every retry)
+        S->>G: insert the event with id = sync_key
+        alt created, or "duplicate" (it was created by an earlier attempt)
+            S->>D: mark SYNCED + save Google's event id
+        else Google rejected this event
+            S->>D: mark SYNC_FAILED + the reason, then carry on
+        else Google rejected the sign-in (401)
+            S-->>S: stop - every other event would fail the same way
+        end
+    end
+```
+
+Two decisions here are the opposite of the upload's:
+
+- **Commit after every event, not one transaction.** A database rollback can't take an event
+  back out of Google Calendar. If the sync crashed at event 30 inside one big transaction, the
+  database would forget that events 1-29 were sent, and a retry would send them again.
+- **An idempotency key.** There's still a tiny gap: Google creates the event, then the server
+  crashes before saving that it did. To close it, each event gets a random ID (`sync_key`) that
+  is saved *before* contacting Google, and we ask Google to use it as the event's ID. A retry
+  sends the same ID, and Google refuses to create a second event with an ID it already has, so
+  the retry can't make a duplicate. I made the key random instead of using the row's `id`,
+  because row ids start again at 1 if the database is ever recreated, and would then clash with
+  old events. This is the same idea payment APIs use so a retried payment isn't charged twice.
+
+`SyncService` gets its calendar connection through its constructor (a "factory" function), so
+the tests pass in a hand-written `FakeCalendar` instead of patching Google's library.
+
 ## Error handling
 
 Errors are grouped by *what kind of failure* it is, not by which library failed:
@@ -198,17 +267,21 @@ Errors are grouped by *what kind of failure* it is, not by which library failed:
 ```mermaid
 classDiagram
     Exception <|-- AppError
+    AppError <|-- NotSignedInError
     AppError <|-- NotFoundError
     AppError <|-- InvalidInputError
     AppError <|-- ConflictError
     AppError <|-- ExternalServiceError
     InvalidInputError <|-- PDFExtractionError
+    ConflictError <|-- GoogleNotConnectedError
     ExternalServiceError <|-- LLMExtractionError
+    ExternalServiceError <|-- GoogleSignInError
     ExternalServiceError <|-- GoogleCalendarError
+    GoogleCalendarError <|-- GoogleAuthError
 ```
 
 `main.py` registers one handler for `AppError` and maps each category to an HTTP status
-(`NotFoundError` -> 404, `InvalidInputError` -> 400, `ConflictError` -> 409,
+(`NotSignedInError` -> 401, `NotFoundError` -> 404, `InvalidInputError` -> 400, `ConflictError` -> 409,
 `ExternalServiceError` -> 502). When I added `ConflictError` for "you can't edit a synced
 event", the only other change needed was one line in that map. This is the
 same idea as the exception hierarchies from CPSC 210: code that handles the parent type
@@ -284,6 +357,16 @@ A few decisions I'd point out:
 - **Each row owns its own mutations**, so "Saving…" and errors belong to that row. The table
   passes each row its `uploadId`, so rows update the exact cache entry the table reads.
 
+### Syncing
+
+- **The table locks while a sync runs.** The server has already read every event when the sync
+  starts, so an edit made halfway through could be silently left out of Google Calendar.
+- **After a sync, the returned events replace their cached copies**, so every row's badge updates.
+  If the sync stops part-way with an error, the error doesn't say which events made it, so the
+  list is reloaded from the server instead of guessed at.
+- **The button never claims something false while loading.** Until the connection check answers,
+  it says "Checking the Google Calendar connection…" rather than "Connect Google Calendar".
+
 ## How the two halves connect
 
 The frontend (port 5173 locally) and backend (port 8000) are different *origins*, so browsers
@@ -293,26 +376,89 @@ I chose this over a dev proxy because it's how a separately hosted frontend and 
 production. Something that surprised me: CORS isn't a firewall - the request still reaches the
 server, the browser just won't let another site's JavaScript *read* the response.
 
-Google sign-in is different from the API calls because it's a *page navigation*: the whole
-browser goes to Google and back, so the backend answers with redirects instead of JSON.
+The frontend sends every request with `credentials: 'include'` so the session cookie goes
+along (fetch leaves cookies off cross-origin requests otherwise), and the backend's CORS setup
+has `allow_credentials=True`. That combination is only safe because the allowed origin is one
+specific site and never `*`.
+
+## Accounts and sessions
+
+Everyone signs in with Google. There are no passwords in the app at all, so there's nothing
+for me to store or leak. One trip to Google's sign-in page gives the backend two separate
+things:
+
+- an **ID token** (OpenID Connect): Google's signed statement of *who* the person is. This is
+  what logs them in.
+- **credentials** for the `calendar.events` permission: *what the app may do*. These are only
+  used later, for syncing.
+
+Keeping those two ideas apart matters because Google lets people untick the calendar
+permission on its consent screen. They still get signed in; they just can't sync until they
+connect the calendar (`?google=no_calendar`).
 
 ```mermaid
 sequenceDiagram
     participant U as Browser
     participant B as Backend
     participant G as Google
-    U->>B: click "Connect Google Calendar" (/auth/google/login)
-    B-->>U: redirect to Google (with a state value and a PKCE challenge)
-    U->>G: sign in and approve calendar access
+    U->>B: click "Sign in with Google" (/auth/google/login)
+    B-->>U: redirect to Google, and put the state + PKCE verifier in this browser's cookie
+    U->>G: choose an account (and approve calendar access)
     G-->>U: redirect to /auth/google/callback?code=...&state=...
-    U->>B: callback
+    U->>B: callback (with the cookie)
+    B->>B: state matches the one in this browser's cookie?
     B->>G: swap the code (plus the PKCE verifier) for tokens
-    B-->>U: redirect to the frontend: /?google=connected
+    B->>B: check the ID token (Google's signature, issued to this app, email verified)
+    B->>B: find or create the user by Google ID, start a session
+    B-->>U: new cookie holding the session token, redirect to /?google=connected
 ```
 
 If anything goes wrong, the callback redirects to `/?google=error&reason=<code>` with a fixed
 code like `access_denied`, never raw error text, and the frontend turns the code into a
 friendly message.
+
+**Users are found by Google's ID, not their email.** The ID token's `sub` claim is Google's
+permanent ID for the account. People can change their email address, so the email is only
+stored for display.
+
+**Sessions live in the database.** The cookie holds a random 256-bit token, and the
+`login_sessions` table holds a SHA-256 hash of it. A plain fast hash is fine here: bcrypt and
+similar slow hashes exist for passwords, which are short and guessable, but nobody can guess a
+256-bit random token. Hashing means that even if the database leaked, its contents couldn't be
+turned back into working cookies. I chose database sessions over putting the user ID in a
+signed cookie because a signed cookie can't be taken back. With a database row, signing out
+deletes it, and a copied cookie stops working straight away. There's a test for exactly that.
+Each browser gets its own session, so signing out on a laptop doesn't sign out a phone.
+
+**The cookie.** Starlette's `SessionMiddleware` signs the cookie with `SESSION_SECRET_KEY`, so
+the browser can't change it. It's `HttpOnly` (page JavaScript can't read it), `SameSite=Lax`,
+and `Secure` once the app runs on HTTPS. It's named `__session` because Firebase Hosting removes
+every other cookie when it forwards requests to a backend. Only `session_cookie.py` knows what's
+inside it.
+
+**Attacks this design blocks:**
+
+- **Login CSRF.** An attacker could start a sign-in to *their own* account and trick someone
+  into opening the callback link, quietly signing the victim into the attacker's account. The
+  attempt's `state` is stored in the cookie of the browser that started it, so a callback that
+  arrives in any other browser is refused. (My first version kept attempts in a server-side
+  dict, which checked the `state` was real but not *whose* it was.)
+- **CSRF on the API.** `SameSite=Lax` means browsers leave the cookie off requests that other
+  sites trigger in the background (form posts, fetch), so another site can't upload or sync as
+  you. That's also why signing out is a `POST`: Lax still sends cookies on ordinary links, which
+  are `GET`s.
+- **Session fixation.** Signing in replaces the cookie and creates a brand-new token, and ends
+  any session the browser had before. So a token someone planted before sign-in is worthless
+  afterwards.
+- **Reading other people's data.** Every data route depends on `get_current_user`, which raises
+  `NotSignedInError` (401) before any route code runs, and the services only ever look up the
+  current user's rows (see "Ownership checks" below).
+
+**Frontend.** `App` asks `/auth/status` who is signed in and shows either the sign-in screen or
+the app. If any request ever comes back `401` (the session expired, or you signed out in another
+tab), the query client re-checks the status once, in one place, and the app switches to the
+sign-in screen. Signing out also removes every cached query, so the next person on that browser
+can never see the last person's events, even for a moment.
 
 Every URL that changes between environments is a setting (`FRONTEND_URL`, `BACKEND_URL`,
 `VITE_API_URL`), so deploying shouldn't need any code changes. `VITE_` variables end up in the
@@ -339,14 +485,24 @@ fields leave the server. `raw_text` is never sent back, and no schema includes t
 Google tokens, so a new route can't leak them by accident.
 
 **Dependency injection for services.** Routes ask FastAPI for what they need
-(`Depends(get_upload_service)`) instead of building it. `get_current_user` in
-`dependencies.py` is the only place that knows the app currently has one user; supporting
-real accounts later means changing that one function.
+(`Depends(get_upload_service)`) instead of building it. This paid off when I added real
+accounts: before that, `get_current_user` in `dependencies.py` was the only place that knew
+the app had a single user. Switching to sessions meant changing that function, and none of the
+services or their tests had to change at all.
 
 **Ownership checks return 404, not 403.** `UploadService.get_upload` checks that the upload
-belongs to the current user. With one user this never fails, but with many it stops someone
-reading other people's uploads by changing the ID in the URL (an "IDOR" bug). Returning 404
+belongs to the current user. This stops someone reading other people's uploads by changing
+the ID in the URL (an "IDOR" bug). Returning 404
 means the app doesn't even confirm the upload exists.
+
+**Schema changes go through migrations.** Tables are created and changed by Alembic migrations
+(`backend/migrations/versions/`), never by the app at startup. Each change is a small,
+reviewable file that can upgrade an existing database without losing data, and can be undone.
+The first migration is a baseline of the original tables; the database I already had was
+*stamped* with it rather than rebuilt. On startup the app checks the database is on the latest
+migration and refuses to start (with the command to run) if it isn't, instead of failing on the
+first request. A test checks that running every migration produces exactly the schema
+`models.py` describes, so a model change without a migration can't slip through.
 
 **No repository layer (on purpose).** Some architectures put every database query in a
 separate repository class. At this size that would just add another layer to click through,
@@ -364,6 +520,11 @@ them out.
   including the failure paths.
 - HTTP-level tests go through the real app with FastAPI's `TestClient`, pointed at the test
   database, to check things like the sign-in redirects and that CORS refuses other sites.
+- Sign-in tests fake only Google. `TestClient` keeps cookies between requests like a browser,
+  so they sign in, sign out, copy a cookie into a second "browser", and finish a sign-in in the
+  wrong browser, all through the real routes and middleware.
+- Migrations are tested against real throwaway SQLite files: they build exactly what
+  `models.py` describes, upgrading keeps existing data, and every migration can be undone.
 - Run them from `backend/` with `pytest`.
 - The frontend uses Vitest and React Testing Library. Tests render real components and only
   fake the network (`fetch`), so they check what a user would see rather than internal details.
@@ -371,21 +532,30 @@ them out.
 
 ## Known limitations and future work
 
+- **Same-site hosting.** The session cookie is `SameSite=Lax`, so the frontend and backend have
+  to be the same *site* when deployed: either one domain (Firebase Hosting forwarding `/api` to
+  the backend) or subdomains of one domain. On two unrelated domains, browsers would treat the
+  cookie as third-party and block it.
+- **The pre-accounts user.** Uploads made before accounts existed belong to a user with no
+  Google identity. They're kept, and can be moved to a real account with one SQL `UPDATE`.
+
 - **Provider interfaces.** The Claude and Google code are plain modules. If I wanted to support
   another calendar (e.g. Outlook) or AI provider, I'd define interfaces like `CalendarProvider`
   and inject the implementation, which would also make the tests less dependent on file paths.
   I left this out for now because I only need one of each.
-- **Database migrations.** `create_all` can create tables but can't change existing ones, so a
-  schema change currently means recreating the local database. A migration tool (Alembic) is the
-  proper fix once there's real data to keep.
-- **Slow requests.** Extraction takes around a minute and the browser waits for it. A background
-  job with a progress indicator would be a better experience.
+- **Slow requests.** Extraction takes around a minute and syncing about 30 seconds, and the
+  browser waits for both. A background job with a progress indicator would be a better
+  experience. Google's batch requests could also send many events in one HTTP call.
+- **One-way sync.** Events are only ever created in Google Calendar. Editing or deleting an event
+  afterwards has to be done in Google Calendar; updating them from the app would use Google's
+  update and delete calls with the saved `google_event_id`.
+- **Events deleted in Google.** If an event were deleted in Google Calendar *between* a crashed
+  attempt and its retry, Google would still treat the ID as taken, and the app would mark it as
+  synced. It needs a crash at exactly the wrong moment plus a manual delete, so I've left it.
 - **Table reading.** Claude sometimes misreads which weekday a column belongs to. The review
   step catches this, but improving the prompt is ongoing.
 - **Hand-written frontend types.** `types.ts` is kept in sync with the backend by hand. Generating
   it from the backend's OpenAPI schema (`/openapi.json`) would make drift impossible.
-- **Syncing.** Events can be reviewed and edited, but syncing them to Google Calendar is the
-  next feature.
 - **Lost updates.** If the same event were edited in two tabs at once, the last save would win.
   Sending only changed fields makes this much less likely, and a version number checked on each
   save (optimistic locking) would rule it out if it ever mattered.

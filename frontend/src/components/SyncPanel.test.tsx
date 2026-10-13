@@ -25,7 +25,7 @@ interface FakeBackend {
 /** The real table, with a fake backend that answers auth status, the event list, and sync. */
 function renderTable({ connected = true, events = [LECTURE, LAB, UNTICKED, ALREADY_SYNCED], onSync }: FakeBackend) {
   const fetchMock = mockFetch((url) => {
-    if (url.endsWith('/auth/google/status')) return jsonResponse({ connected })
+    if (url.endsWith('/auth/status')) return jsonResponse({ signed_in: true, email: 'a@example.com', calendar_connected: connected })
     if (url.includes('/events/sync')) return onSync!()
     return jsonResponse(events)
   })

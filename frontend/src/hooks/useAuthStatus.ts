@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { queryKeys } from './queryKeys'
 
-/** Whether Google Calendar is connected. */
+/** Who is signed in, and whether their Google Calendar is connected. */
 export function useAuthStatus() {
   return useQuery({
     queryKey: queryKeys.authStatus,

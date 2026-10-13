@@ -8,16 +8,15 @@ from app.dependencies import get_calendar_factory
 from app.domain import EventDraft, EventStatus, UploadStatus
 from app.main import app
 from app.models import ExtractedEvent, Upload
-from app.services.users import get_local_user
 from tests.fakes import FakeCalendar
 
 DRAFT = EventDraft(title="Lab L1", start_date=date(2026, 9, 21), date_is_approximate=True, start_time="10:00")
 
 
 @pytest.fixture
-def event(db) -> ExtractedEvent:
-    # Owned by the same user the routes act as (get_current_user -> get_local_user).
-    upload = Upload(user=get_local_user(db), filename="test.pdf", raw_text="...", status=UploadStatus.EXTRACTED)
+def event(db, user) -> ExtractedEvent:
+    # Owned by the user the `client` fixture is signed in as.
+    upload = Upload(user=user, filename="test.pdf", raw_text="...", status=UploadStatus.EXTRACTED)
     upload.events = [ExtractedEvent.from_draft(DRAFT)]
     db.add(upload)
     db.commit()
@@ -71,9 +70,9 @@ def fake_calendar(client):
     return calendar  # the `client` fixture clears every override afterwards
 
 
-def test_sync_returns_the_attempted_events_with_their_new_status(client, db, event, fake_calendar):
+def test_sync_returns_the_attempted_events_with_their_new_status(client, db, user, event, fake_calendar):
     event.included = True
-    get_local_user(db).google_credentials_json = '{"token": "saved"}'
+    user.google_credentials_json = '{"token": "saved"}'
     db.commit()
 
     response = client.post("/events/sync", params={"upload_id": event.upload_id})

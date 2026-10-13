@@ -39,8 +39,8 @@ def test_unused_methods_are_not_allowed(client):
 
 
 def test_responses_only_grant_read_access_to_the_frontend(client):
-    allowed = client.get("/auth/google/status", headers={"Origin": FRONTEND})
-    other = client.get("/auth/google/status", headers={"Origin": SOME_OTHER_SITE})
+    allowed = client.get("/auth/status", headers={"Origin": FRONTEND})
+    other = client.get("/auth/status", headers={"Origin": SOME_OTHER_SITE})
     assert allowed.headers["access-control-allow-origin"] == FRONTEND
     # The request still runs (CORS is enforced by the browser), but without this header
     # the other site's JavaScript isn't allowed to read the response.

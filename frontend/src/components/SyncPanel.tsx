@@ -14,7 +14,7 @@ interface SyncPanelProps {
 /** The "Sync to Google Calendar" button, why it might be disabled, and what the last sync did. */
 export default function SyncPanel({ events, onSync, isSyncing, lastResult, error }: SyncPanelProps) {
   const authStatus = useAuthStatus()
-  const isConnected = authStatus.data?.connected === true
+  const isConnected = authStatus.data?.signed_in === true && authStatus.data.calendar_connected
 
   // Same rule as the backend's ExtractedEvent.is_waiting_to_sync.
   const waiting = events.filter((event) => event.included && event.status !== 'synced')

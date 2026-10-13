@@ -4,18 +4,20 @@
 import { SIGN_IN_FAILURE_REASONS, type SignInFailureReason } from './types'
 
 export type SignInResult =
-  | { outcome: 'connected' }
+  | { outcome: 'connected' } // signed in, with Google Calendar connected
+  | { outcome: 'no_calendar' } // signed in, but not allowed to add calendar events yet
   | { outcome: 'failed'; reason: SignInFailureReason | 'unknown' }
 
 function isSignInFailureReason(value: string | null): value is SignInFailureReason {
   return SIGN_IN_FAILURE_REASONS.some((reason) => reason === value)
 }
 
-/** What the backend's sign-in redirect reported: ?google=connected or ?google=error&reason=... */
+/** What the backend's sign-in redirect reported: ?google=connected|no_calendar, or ?google=error&reason=... */
 export function readSignInResult(search: string): SignInResult | null {
   const params = new URLSearchParams(search)
   const google = params.get('google')
   if (google === 'connected') return { outcome: 'connected' }
+  if (google === 'no_calendar') return { outcome: 'no_calendar' }
   if (google === 'error') {
     const reason = params.get('reason')
     // Never trust a URL: an unrecognised code becomes 'unknown' rather than being shown.

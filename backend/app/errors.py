@@ -15,6 +15,10 @@ class AppError(Exception):
     """Base class for failures the app expects and knows how to report."""
 
 
+class NotSignedInError(AppError):
+    """The request needs a signed-in user, and there isn't one (or their session expired)."""
+
+
 class NotFoundError(AppError):
     """The requested item doesn't exist, or belongs to another user."""
 

@@ -1,14 +1,32 @@
 import { describe, expect, it } from 'vitest'
 
 import { jsonResponse, mockFetch } from '../test/mockFetch'
-import { ApiError, api, googleSignInUrl } from './client'
+import { ApiError, api, googleConnectCalendarUrl, googleSignInUrl } from './client'
 
 describe('api client', () => {
   it('calls the configured backend URL and returns the parsed JSON', async () => {
-    const fetchMock = mockFetch(() => jsonResponse({ connected: true }))
+    const fetchMock = mockFetch(() => jsonResponse({ signed_in: false }))
 
-    await expect(api.getAuthStatus()).resolves.toEqual({ connected: true })
-    expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/auth/google/status')
+    await expect(api.getAuthStatus()).resolves.toEqual({ signed_in: false })
+    expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/auth/status')
+  })
+
+  it('sends the session cookie with every request', async () => {
+    // The backend is on another origin, where fetch leaves cookies off unless told otherwise.
+    const fetchMock = mockFetch(() => jsonResponse([]))
+
+    await api.getEvents(3)
+    await api.updateEvent(5, { included: false })
+
+    expect(fetchMock.mock.calls.map(([, init]) => init?.credentials)).toEqual(['include', 'include'])
+  })
+
+  it('signs out with a POST, which answers with no content', async () => {
+    const fetchMock = mockFetch(() => new Response(null, { status: 204 }))
+
+    await expect(api.signOut()).resolves.toBeUndefined()
+    expect(fetchMock.mock.calls[0][0]).toBe('http://api.test/auth/sign-out')
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
   })
 
   it("turns an error response into an ApiError carrying the backend's message", async () => {
@@ -105,7 +123,8 @@ describe('api client', () => {
     expect(init?.method).toBe('POST')
   })
 
-  it('points the sign-in link at the backend login route', () => {
+  it('points the sign-in links at the backend login route', () => {
     expect(googleSignInUrl).toBe('http://api.test/auth/google/login')
+    expect(googleConnectCalendarUrl).toBe('http://api.test/auth/google/login?connect_calendar=true')
   })
 })

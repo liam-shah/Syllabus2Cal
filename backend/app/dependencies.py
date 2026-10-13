@@ -4,22 +4,36 @@ FastAPI caches dependencies within a request, so every Depends(get_db) below
 receives the same session.
 """
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
+from app import session_cookie
 from app.db import get_db
-from app.models import User
+from app.errors import NotSignedInError
 from app.integrations.google_calendar import GoogleCalendarClient
+from app.models import User
+from app.services.auth_service import AuthService
 from app.services.event_service import EventService
 from app.services.sync_service import CalendarFactory, SyncService
 from app.services.upload_service import UploadService
-from app.services.users import get_local_user
 
 
-def get_current_user(db: Session = Depends(get_db)) -> User:
-    # Single-user shortcut: the only place in the app that knows there is one user.
-    # A multi-user version would look the user up from their login session here.
-    return get_local_user(db)
+def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
+    return AuthService(db)
+
+
+def get_optional_user(request: Request, auth: AuthService = Depends(get_auth_service)) -> User | None:
+    """The signed-in user, or None. For the few routes that also work signed out."""
+    token = session_cookie.read_token(request)
+    return auth.user_for_token(token) if token is not None else None
+
+
+def get_current_user(user: User | None = Depends(get_optional_user)) -> User:
+    """The signed-in user. Every route that touches someone's data depends on this, so a
+    request without a valid session is turned away (401) before any of that code runs."""
+    if user is None:
+        raise NotSignedInError("You're not signed in. Sign in with Google to continue.")
+    return user
 
 
 def get_upload_service(

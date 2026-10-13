@@ -18,3 +18,6 @@ frontend/dist/
 
 # Private notes (dev log for interview prep) - never committed
 private/
+
+# graphify output (generated, can be rebuilt any time)
+graphify-out/
