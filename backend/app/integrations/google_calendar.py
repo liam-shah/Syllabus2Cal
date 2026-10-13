@@ -26,6 +26,10 @@ class GoogleCalendarError(ExternalServiceError):
     """Raised when signing in to Google or creating a calendar event fails."""
 
 
+class GoogleAuthError(GoogleCalendarError):
+    """Google no longer accepts the saved sign-in. Every further request would fail the same way."""
+
+
 def build_flow(code_verifier: str | None = None) -> Flow:
     return Flow.from_client_secrets_file(
         CLIENT_SECRET_PATH,
@@ -55,8 +59,8 @@ def load_credentials(credentials_json: str) -> Credentials:
         try:
             credentials.refresh(Request())
         except RefreshError as e:
-            raise GoogleCalendarError(
-                "Google access expired or was revoked - reconnect your Google account"
+            raise GoogleAuthError(
+                "Google access expired or was revoked - reconnect Google Calendar and sync again"
             ) from e
     return credentials
 
@@ -89,14 +93,52 @@ def build_event_body(event: EventDraft) -> dict:
     return body
 
 
-def insert_event(credentials: Credentials, event: EventDraft) -> str:
-    service = build("calendar", "v3", credentials=credentials)
-    try:
-        created = service.events().insert(
-            calendarId="primary", body=build_event_body(event)
-        ).execute()
-    except HttpError as e:
-        raise GoogleCalendarError(f"Google Calendar rejected the event '{event.title}': {e}") from e
-    return created["id"]
+def is_duplicate_id_error(error: HttpError) -> bool:
+    """409 means "conflict" in general; only the "duplicate" reason means the ID is already taken."""
+    details = error.error_details if isinstance(error.error_details, list) else []
+    return error.status_code == 409 and any(
+        isinstance(detail, dict) and detail.get("reason") == "duplicate" for detail in details
+    )
+
+
+class GoogleCalendarClient:
+    """A connection to one user's primary Google Calendar.
+
+    Built once per sync (building the API client is relatively slow), then used for every event.
+    """
+
+    def __init__(self, credentials: Credentials):
+        self._credentials = credentials
+        # cache_discovery=False: skip a file cache that only logs warnings with google-auth.
+        self._service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+
+    @classmethod
+    def from_credentials_json(cls, credentials_json: str) -> "GoogleCalendarClient":
+        return cls(load_credentials(credentials_json))  # refreshes the access token if needed
+
+    @property
+    def credentials_json(self) -> str:
+        """The (possibly refreshed) credentials, to save back onto the user afterwards."""
+        return self._credentials.to_json()
+
+    def insert_event(self, event: EventDraft, event_id: str) -> str:
+        """Create the event with *our* ID and return it. Safe to call twice with the same ID.
+
+        Google refuses a second event with an ID that already exists (409 "duplicate"). The
+        only way that happens here is a retry of an attempt that actually succeeded, so that
+        refusal means the event is already in the calendar - which is exactly the goal.
+        """
+        body = build_event_body(event) | {"id": event_id}
+        try:
+            created = self._service.events().insert(calendarId="primary", body=body).execute()
+        except HttpError as e:
+            if is_duplicate_id_error(e):
+                return event_id
+            if e.status_code == 401:
+                raise GoogleAuthError(
+                    "Google rejected the saved sign-in - reconnect Google Calendar and sync again"
+                ) from e
+            raise GoogleCalendarError(f"Google Calendar rejected this event ({e.status_code}: {e.reason})") from e
+        return created["id"]
 
 

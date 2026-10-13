@@ -93,6 +93,12 @@ export const api = {
       body: JSON.stringify(changes),
     })
   },
+
+  /** Sync the upload's ticked events; returns the events it attempted, with their new status. */
+  syncEvents(uploadId: number): Promise<ExtractedEvent[]> {
+    const query = new URLSearchParams({ upload_id: String(uploadId) })
+    return request<ExtractedEvent[]>(`/events/sync?${query}`, { method: 'POST' })
+  },
 }
 
 /** Sign-in is a page navigation (the browser leaves the app), not a fetch - so just a URL. */

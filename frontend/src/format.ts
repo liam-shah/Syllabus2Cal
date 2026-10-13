@@ -17,7 +17,10 @@ export function formatTimeRange(startTime: string | null, endTime: string | null
   return endTime === null ? startTime : `${startTime}–${endTime}`
 }
 
-/** plural(1, "event") -> "1 event"; plural(3, "event") -> "3 events". */
-export function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? '' : 's'}`
+/**
+ * plural(1, "event") -> "1 event"; plural(3, "event") -> "3 events".
+ * Irregular forms: plural(3, "of these has", "of these have") -> "3 of these have".
+ */
+export function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`
 }

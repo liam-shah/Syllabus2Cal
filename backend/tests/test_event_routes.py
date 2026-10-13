@@ -1,12 +1,15 @@
-"""PATCH /events/{event_id} through the real app (HTTP status codes and response shapes)."""
+"""The /events routes through the real app (HTTP status codes and response shapes)."""
 
 from datetime import date
 
 import pytest
 
+from app.dependencies import get_calendar_factory
 from app.domain import EventDraft, EventStatus, UploadStatus
+from app.main import app
 from app.models import ExtractedEvent, Upload
 from app.services.users import get_local_user
+from tests.fakes import FakeCalendar
 
 DRAFT = EventDraft(title="Lab L1", start_date=date(2026, 9, 21), date_is_approximate=True, start_time="10:00")
 
@@ -57,3 +60,36 @@ def test_editing_a_synced_event_is_a_409(client, db, event):
 
 def test_missing_event_is_a_404(client):
     assert patch(client, 999, {"included": True}).status_code == 404
+
+
+# --- POST /events/sync ---------------------------------------------------------------------
+
+@pytest.fixture
+def fake_calendar(client):
+    calendar = FakeCalendar()
+    app.dependency_overrides[get_calendar_factory] = lambda: (lambda credentials_json: calendar)
+    return calendar  # the `client` fixture clears every override afterwards
+
+
+def test_sync_returns_the_attempted_events_with_their_new_status(client, db, event, fake_calendar):
+    event.included = True
+    get_local_user(db).google_credentials_json = '{"token": "saved"}'
+    db.commit()
+
+    response = client.post("/events/sync", params={"upload_id": event.upload_id})
+
+    assert response.status_code == 200
+    [synced] = response.json()
+    assert (synced["id"], synced["status"]) == (event.id, "synced")
+    assert synced["google_event_id"] == fake_calendar.inserted[0][1]
+
+
+def test_sync_without_a_google_connection_is_a_409(client, event, fake_calendar):
+    response = client.post("/events/sync", params={"upload_id": event.upload_id})
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Connect Google Calendar before syncing."}
+    assert fake_calendar.inserted == []
+
+
+def test_syncing_a_missing_upload_is_a_404(client, fake_calendar):
+    assert client.post("/events/sync", params={"upload_id": 999}).status_code == 404

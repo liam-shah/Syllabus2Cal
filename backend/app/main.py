@@ -1,6 +1,8 @@
 """FastAPI app entry point: wires routers, error handling, and startup together.
 
-Run from backend/ with: uvicorn app.main:app --reload --port 8000
+Run from backend/ with:
+    alembic upgrade head                       (create/update the database first)
+    uvicorn app.main:app --reload --port 8000
 """
 
 from contextlib import asynccontextmanager
@@ -9,9 +11,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app import models  # noqa: F401 - importing registers the tables on Base
 from app.config import settings
-from app.db import Base, engine
+from app.db import engine, ensure_database_is_up_to_date
 from app.errors import AppError, ConflictError, ExternalServiceError, InvalidInputError, NotFoundError
 from app.routers import auth, events, upload
 
@@ -33,7 +34,9 @@ def status_code_for(error: AppError) -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    # Tables are created and changed by Alembic migrations, never by the app itself; the app
+    # only refuses to start on a database that's behind (instead of failing on the first request).
+    ensure_database_is_up_to_date(engine)
     yield
 
 

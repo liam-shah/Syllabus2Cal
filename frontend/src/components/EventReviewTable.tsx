@@ -2,7 +2,9 @@ import type { ReactNode } from 'react'
 
 import { plural } from '../format'
 import { useEvents } from '../hooks/useEvents'
+import { useSyncEvents } from '../hooks/useSyncEvents'
 import EventRow from './EventRow'
+import SyncPanel from './SyncPanel'
 
 interface EventReviewTableProps {
   uploadId: number
@@ -11,6 +13,8 @@ interface EventReviewTableProps {
 /** The review step: every extracted event, so the user can check them before syncing. */
 export default function EventReviewTable({ uploadId }: EventReviewTableProps) {
   const events = useEvents(uploadId)
+  // Hooks run on every render in the same order, so this sits above the early returns below.
+  const sync = useSyncEvents(uploadId)
 
   if (events.isPending) {
     return (
@@ -50,6 +54,13 @@ export default function EventReviewTable({ uploadId }: EventReviewTableProps) {
         {approximateCount > 0 &&
           ` · ${approximateCount} with approximate dates (unticked until you fix the date or tick them)`}
       </p>
+      <SyncPanel
+        events={events.data}
+        onSync={() => sync.mutate()}
+        isSyncing={sync.isPending}
+        lastResult={sync.data}
+        error={sync.isError ? sync.error.message : null}
+      />
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
           <caption className="sr-only">Events extracted from the uploaded PDF</caption>
@@ -66,7 +77,9 @@ export default function EventReviewTable({ uploadId }: EventReviewTableProps) {
           <tbody className="divide-y divide-slate-100">
             {/* key: a stable id lets React keep each row's identity across re-renders. */}
             {events.data.map((event) => (
-              <EventRow key={event.id} event={event} uploadId={uploadId} />
+              // Rows are locked while syncing: the sync has already read each event, so an edit
+              // made mid-sync could be silently left out of Google Calendar.
+              <EventRow key={event.id} event={event} uploadId={uploadId} disabled={sync.isPending} />
             ))}
           </tbody>
         </table>

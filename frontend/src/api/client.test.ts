@@ -95,6 +95,16 @@ describe('api client', () => {
     })
   })
 
+  it('starts a sync with a POST for that upload', async () => {
+    const fetchMock = mockFetch(() => jsonResponse([]))
+
+    await api.syncEvents(7)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://api.test/events/sync?upload_id=7')
+    expect(init?.method).toBe('POST')
+  })
+
   it('points the sign-in link at the backend login route', () => {
     expect(googleSignInUrl).toBe('http://api.test/auth/google/login')
   })

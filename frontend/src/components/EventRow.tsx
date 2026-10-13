@@ -15,10 +15,12 @@ interface EventRowProps {
    * for which cache entry to update.
    */
   uploadId: number
+  /** True while a sync is running: nothing can be changed until it finishes. */
+  disabled?: boolean
 }
 
 /** One event in the review table: an include checkbox, the event, and an Edit button. */
-export default function EventRow({ event, uploadId }: EventRowProps) {
+export default function EventRow({ event, uploadId, disabled = false }: EventRowProps) {
   const [isEditing, setIsEditing] = useState(false)
   // Each row has its own mutations, so "saving" and errors belong to that row only.
   const setIncluded = useSetIncluded(uploadId)
@@ -67,7 +69,7 @@ export default function EventRow({ event, uploadId }: EventRowProps) {
           aria-label={`Include ${event.title}`}
           checked={event.included}
           // Disabled while saving so two clicks can't race each other to the server.
-          disabled={isLocked || setIncluded.isPending}
+          disabled={isLocked || disabled || setIncluded.isPending}
           title={isLocked ? lockedReason : undefined}
           onChange={(e) => setIncluded.mutate({ eventId: event.id, included: e.target.checked })}
           className="mt-1 size-4"
@@ -102,7 +104,7 @@ export default function EventRow({ event, uploadId }: EventRowProps) {
         <button
           type="button"
           onClick={startEditing}
-          disabled={isLocked}
+          disabled={isLocked || disabled}
           title={isLocked ? lockedReason : undefined}
           aria-label={`Edit ${event.title}`}
           className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"

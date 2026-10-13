@@ -1,9 +1,12 @@
-"""SQLAlchemy engine + session setup."""
+"""SQLAlchemy engine + session setup, and the check that the database schema is current."""
 
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-from app.config import settings
+from app.config import BACKEND_DIR, settings
 
 
 def create_db_engine(url: str, **engine_options) -> Engine:
@@ -37,3 +40,20 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def latest_migration() -> str:
+    """The newest migration in migrations/versions (Alembic calls it the "head")."""
+    return ScriptDirectory.from_config(Config(BACKEND_DIR / "alembic.ini")).get_current_head()
+
+
+def ensure_database_is_up_to_date(engine: Engine) -> None:
+    """Refuse to start on a database that's missing migrations, with a message saying what to run."""
+    with engine.connect() as connection:
+        current = MigrationContext.configure(connection).get_current_revision()
+    expected = latest_migration()
+    if current != expected:
+        raise RuntimeError(
+            f"The database is at migration {current or '(none)'} but the code expects {expected}. "
+            "From backend/, run:  alembic upgrade head"
+        )

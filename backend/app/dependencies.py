@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User
+from app.integrations.google_calendar import GoogleCalendarClient
 from app.services.event_service import EventService
+from app.services.sync_service import CalendarFactory, SyncService
 from app.services.upload_service import UploadService
 from app.services.users import get_local_user
 
@@ -32,3 +34,17 @@ def get_event_service(
     user: User = Depends(get_current_user),
 ) -> EventService:
     return EventService(db, user)
+
+
+def get_calendar_factory() -> CalendarFactory:
+    # Its own dependency so HTTP tests can swap in a fake calendar with dependency_overrides.
+    return GoogleCalendarClient.from_credentials_json
+
+
+def get_sync_service(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    uploads: UploadService = Depends(get_upload_service),
+    open_calendar: CalendarFactory = Depends(get_calendar_factory),
+) -> SyncService:
+    return SyncService(db, user, uploads, open_calendar)

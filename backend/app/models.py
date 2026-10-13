@@ -1,9 +1,10 @@
 """SQLAlchemy models: how users, uploads, and events are stored in the database."""
 
+import uuid
 from datetime import date, datetime, time
 from enum import StrEnum
 
-from sqlalchemy import Enum, ForeignKey, Text, func
+from sqlalchemy import Enum, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -68,6 +69,11 @@ class ExtractedEvent(Base):
         status_column_type(EventStatus, "event_status"), default=EventStatus.PENDING_REVIEW
     )
     google_event_id: Mapped[str | None]
+    # Idempotency key: the ID we ask Google to give this event. Chosen (and saved) before the
+    # first attempt, so a retry after a crash sends the *same* ID and Google refuses a duplicate.
+    # Random rather than the row id, which restarts at 1 if the database is ever recreated.
+    # A unique *index* (not a constraint): SQLite can add one to an existing table without rebuilding it.
+    sync_key: Mapped[str | None] = mapped_column(String(32), unique=True, index=True)
     sync_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
@@ -110,6 +116,28 @@ class ExtractedEvent(Base):
         # Ticking/unticking is a choice about syncing, not a change to the event itself.
         if changes.keys() - {"included"}:
             self.status = EventStatus.EDITED  # also moves SYNC_FAILED back, ready to retry
+
+    # --- Syncing ---------------------------------------------------------------------------
+
+    @property
+    def is_waiting_to_sync(self) -> bool:
+        """Ticked for the calendar and not there yet (including earlier failed attempts)."""
+        return self.included and self.status is not EventStatus.SYNCED
+
+    def ensure_sync_key(self) -> str:
+        """The ID to give this event in Google Calendar - chosen once, then reused on every retry."""
+        if self.sync_key is None:
+            self.sync_key = uuid.uuid4().hex  # 32 chars of 0-9a-f: a valid Google event ID
+        return self.sync_key
+
+    def mark_synced(self, google_event_id: str) -> None:
+        self.status = EventStatus.SYNCED
+        self.google_event_id = google_event_id
+        self.sync_error = None
+
+    def mark_sync_failed(self, reason: str) -> None:
+        self.status = EventStatus.SYNC_FAILED
+        self.sync_error = reason
 
     @staticmethod
     def _check_times(start_time: str | None, end_time: str | None) -> None:

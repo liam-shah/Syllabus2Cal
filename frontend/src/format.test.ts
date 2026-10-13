@@ -27,4 +27,9 @@ describe('plural', () => {
     expect(plural(0, 'event')).toBe('0 events')
     expect(plural(59, 'event')).toBe('59 events')
   })
+
+  it('accepts an irregular plural', () => {
+    expect(plural(1, 'of these has', 'of these have')).toBe('1 of these has')
+    expect(plural(3, 'of these has', 'of these have')).toBe('3 of these have')
+  })
 })

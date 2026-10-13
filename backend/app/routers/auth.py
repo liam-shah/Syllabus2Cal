@@ -1,21 +1,19 @@
-"""Google sign-in routes: /auth/google/login, /callback, /status, and a temporary /test-event.
+"""Google sign-in routes: /auth/google/login, /callback, and /status.
 
 /login and /callback are *page navigations* (the browser goes there), not API calls, so
 they answer with redirects - back to the frontend - rather than JSON.
 """
 
-from datetime import date, timedelta
 from enum import StrEnum
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
 from app.dependencies import get_current_user
-from app.domain import EventDraft
 from app.integrations import google_calendar
 from app.models import User
 
@@ -76,22 +74,3 @@ def google_callback(
 @router.get("/status")
 def google_status(user: User = Depends(get_current_user)):
     return {"connected": user.google_credentials_json is not None}
-
-
-# Temporary: delete once POST /events/sync exists.
-@router.post("/test-event")
-def create_test_event(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if user.google_credentials_json is None:
-        raise HTTPException(status_code=401, detail="Not connected - visit /auth/google/login first")
-
-    credentials = google_calendar.load_credentials(user.google_credentials_json)
-    event_id = google_calendar.insert_event(credentials, EventDraft(
-        title="Calendar PDF Sync test event",
-        start_date=date.today() + timedelta(days=1),
-        date_is_approximate=False,
-        description="Created by the calendar-pdf-sync standalone test. Safe to delete.",
-    ))
-
-    user.google_credentials_json = credentials.to_json()
-    db.commit()
-    return {"google_event_id": event_id}
