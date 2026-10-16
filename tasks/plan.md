@@ -55,7 +55,7 @@ Region: **us-west1 (Oregon)** for Cloud Run and Cloud Tasks, with Neon in **AWS 
 
 ### Phase 2: Extraction moves off the web server
 - [x] Task 5: The extraction job needs only `upload_id`, and claims the upload exactly once
-- [ ] Task 6: A worker endpoint that only accepts calls from Cloud Tasks
+- [x] Task 6: A worker endpoint that only accepts calls from Cloud Tasks
 - [ ] Task 7: In production, uploads queue a Cloud Task instead of a BackgroundTask
 
 ### Checkpoint 2: Production-shaped backend

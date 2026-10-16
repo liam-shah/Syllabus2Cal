@@ -26,7 +26,7 @@ from app.errors import (
     NotSignedInError,
 )
 from app.models import LoginSession
-from app.routers import auth, events, upload
+from app.routers import auth, events, upload, worker
 
 # Each kind of error maps to one HTTP status. Errors themselves don't know about HTTP.
 ERROR_STATUS_CODES: dict[type[AppError], int] = {
@@ -97,3 +97,4 @@ async def handle_app_error(request: Request, error: AppError) -> JSONResponse:
 app.include_router(auth.router)
 app.include_router(upload.router)
 app.include_router(events.router)
+app.include_router(worker.router)

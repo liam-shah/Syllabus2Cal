@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     backend_url: str = "http://localhost:8000"
 
+    # Cloud Tasks (deployed only). Unset locally, where extraction uses BackgroundTasks.
+    service_url: str | None = None  # this Cloud Run service's own run.app URL: where tasks are sent
+    tasks_service_account: str | None = None  # the account whose token every task carries
+
     @property
     def cookies_need_https(self) -> bool:
         """Mark cookies Secure (sent over HTTPS only) whenever the app is served over HTTPS."""

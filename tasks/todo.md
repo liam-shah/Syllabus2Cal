@@ -211,15 +211,17 @@ returns 404. Responses:
 - a claim that's already taken returns 204, so Cloud Tasks stops retrying
 
 **Acceptance criteria:**
-- [ ] With a valid token, the route runs extraction and returns 2xx, including when Claude fails
+- [x] With a valid token, the route runs extraction and returns 2xx, including when Claude fails
   (the upload is marked failed and that's the end of it)
-- [ ] A missing token, wrong audience, wrong service-account email or unverified email each get
+- [x] A missing token, wrong audience, wrong service-account email or unverified email each get
   401 and never touch the upload (one test each); the route returns 404 when it isn't configured
-- [ ] ADR `docs/adr/0003-worker-endpoint-auth.md` (one service with the token checked in the
+- [x] ADR `docs/adr/0003-worker-endpoint-auth.md` (one service with the token checked in the
   app, versus a separate service only Google can reach)
 
 **Verification:**
-- [ ] Tests pass: `python -m pytest -q tests/test_worker_routes.py`
+- [x] Tests pass: `python -m pytest -q tests/test_worker_routes.py` (179 pass on SQLite and Postgres)
+- [x] Local runtime check with the real Google verifier: unconfigured → 404, no token → 401,
+  garbage token → 401, the normal API is unaffected
 - [ ] Manual check (after Task 9): `curl -X POST https://<service>.run.app/internal/extractions/1`
   with no token → 401
 

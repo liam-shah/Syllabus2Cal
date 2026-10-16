@@ -4,13 +4,17 @@ FastAPI caches dependencies within a request, so every Depends(get_db) below
 receives the same session.
 """
 
-from fastapi import Depends, Request
+from collections.abc import Callable
+from functools import partial
+
+from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import session_cookie
 from app.config import settings
 from app.db import SessionLocal, get_db
-from app.errors import NotSignedInError
+from app.errors import NotFoundError, NotSignedInError
+from app.integrations import cloud_tasks
 from app.integrations.google_calendar import GoogleCalendarClient
 from app.models import User
 from app.services.auth_service import AuthService
@@ -55,6 +59,31 @@ def get_event_service(
     user: User = Depends(get_current_user),
 ) -> EventService:
     return EventService(db, user)
+
+
+TaskTokenVerifier = Callable[[str], None]  # raises TaskTokenError for a token not from our queue
+
+
+def get_task_token_verifier() -> TaskTokenVerifier | None:
+    """How to check a Cloud Tasks token, or None when the queue isn't configured (locally).
+    Its own dependency so HTTP tests can swap in a fake check."""
+    if not (settings.service_url and settings.tasks_service_account):
+        return None
+    return partial(cloud_tasks.verify_task_token, audience=settings.service_url,
+                   service_account=settings.tasks_service_account)
+
+
+def require_cloud_tasks(
+    authorization: str | None = Header(default=None),
+    verify: TaskTokenVerifier | None = Depends(get_task_token_verifier),
+) -> None:
+    """Turn away anything but our Cloud Tasks queue, before any route code runs."""
+    if verify is None:
+        raise NotFoundError("Not found")  # no queue configured, so the worker route doesn't exist
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme != "Bearer" or not token:
+        raise cloud_tasks.TaskTokenError("This request isn't from the extraction queue.")
+    verify(token)
 
 
 def get_calendar_factory() -> CalendarFactory:
