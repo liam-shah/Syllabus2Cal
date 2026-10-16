@@ -65,13 +65,15 @@ gets saved, uses up a daily slot, pays for a Claude call and then shows "No even
 Reject it before anything is saved, with a message that suggests the cause.
 
 **Acceptance criteria:**
-- [ ] A PDF whose text is empty or only whitespace gets a 400 saying it looks like a scanned
+- [x] A PDF whose text is empty or only whitespace gets a 400 saying it looks like a scanned
   image, and Claude is never called
-- [ ] Nothing is saved, so the daily limit doesn't count it
+- [x] Nothing is saved, so the daily limit doesn't count it
 
 **Verification:**
-- [ ] Tests pass: `python -m pytest -q tests/test_upload_service.py tests/test_upload_routes.py`
+- [x] Tests pass: `python -m pytest -q tests/test_upload_service.py tests/test_upload_routes.py`
+  (the test uses a real image-only PDF; 154 pass on SQLite and Postgres)
 - [ ] Manual check: upload a PDF made from an image; the form shows the message
+  *(not done yet: needs your Google sign-in in the browser)*
 
 **Dependencies:** None
 

@@ -44,7 +44,7 @@ Region: **us-west1 (Oregon)** for Cloud Run and Cloud Tasks, with Neon in **AWS 
 
 ### Phase 1: Foundation: correct on Postgres
 - [x] Task 1: Backend runs and passes its tests on Postgres *(highest risk, so it goes first)*
-- [ ] Task 2: Reject PDFs with no readable text
+- [x] Task 2: Reject PDFs with no readable text
 - [ ] Task 3: Two syncs at once can't create duplicate calendar events
 - [ ] Task 4: Events sync in the user's own timezone
 
