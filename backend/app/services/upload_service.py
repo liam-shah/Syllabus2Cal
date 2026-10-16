@@ -3,11 +3,13 @@
 It happens in two steps, because Claude takes about a minute and a request shouldn't wait
 that long (Firebase Hosting gives up on a request after 60 seconds):
 
-1. start_upload, during the request: check the limits, save the upload as 'processing'.
-2. extract_events, after the response has been sent: call Claude, save the events, and
-   mark the upload 'extracted' (or 'failed'). The frontend polls the upload until then.
+1. start_upload, during the request: check the limits, save the upload as 'processing' along
+   with everything Claude will need (the PDF's text and tables).
+2. run_extraction, after the response has been sent: claim the upload, call Claude, save the
+   events, and mark it 'extracted' (or 'failed'). The frontend polls the upload until then.
 """
 
+import json
 import math
 from dataclasses import dataclass
 from datetime import timedelta
@@ -60,9 +62,12 @@ class UploadService:
         # never saved, so they don't use up the daily allowance.
         raw_text = pdf_extraction.extract_text(pdf_bytes)
         self._check_text_size(raw_text)
+        # Read now, while we have the PDF: the extraction job only gets the upload's id.
+        tables = pdf_extraction.extract_tables(pdf_bytes)
         self._check_daily_limit()
 
-        upload = Upload(user=self._user, filename=filename, raw_text=raw_text, status=UploadStatus.PROCESSING)
+        upload = Upload(user=self._user, filename=filename, raw_text=raw_text, tables_json=json.dumps(tables),
+                        status=UploadStatus.PROCESSING)
         self._db.add(upload)
         # Committed straight after the limit check, before Claude runs, so the very next request
         # already counts this upload. (Saving it only after Claude answered let a script send
@@ -70,10 +75,10 @@ class UploadService:
         self._db.commit()
         return upload
 
-    def extract_events(self, upload: Upload, pdf_bytes: bytes) -> None:
+    def extract_events(self, upload: Upload) -> None:
         """Run Claude on a 'processing' upload and save the result. Runs in the background."""
         try:
-            tables = pdf_extraction.extract_tables(pdf_bytes)
+            tables = json.loads(upload.tables_json or "[]")  # older uploads saved no tables
             drafts = llm_extraction.extract_events(upload.raw_text, tables)
         except llm_extraction.LLMExtractionError as e:
             # Keep the failed attempt (with its raw_text) so it can be inspected later.
@@ -160,14 +165,29 @@ class UploadService:
         ))
 
 
-def extract_in_background(session_factory: sessionmaker, upload_id: int, pdf_bytes: bytes) -> None:
-    """The background job for step 2: give extract_events a database session of its own.
+def run_extraction(session_factory: sessionmaker, upload_id: int) -> bool:
+    """The job for step 2: claim the upload, then run extract_events in a session of its own.
 
-    It runs after the response has been sent, when the request's session is already closed.
+    It runs after the response has been sent, so it gets only the upload's id and opens its own
+    session. Returns False without calling Claude when there's nothing to do: the upload is
+    missing, no longer processing (e.g. given up on), or another run already claimed it.
     """
     # shortcut: FastAPI BackgroundTasks run inside the web server's process, so a restart loses
     # jobs that are running (get_upload then gives up on them). Move to a real queue (e.g.
     # Cloud Tasks) before Cloud Run, which also slows the CPU down once a response is sent.
     with session_factory() as db:
+        # Compare-and-set, like _give_up_on: the database only changes the row if nobody has
+        # claimed it yet, so of two runs (a queue retrying, say) exactly one gets to call Claude.
+        claimed = db.execute(
+            update(Upload)
+            .where(Upload.id == upload_id, Upload.status == UploadStatus.PROCESSING,
+                   Upload.extraction_claimed_at.is_(None))
+            .values(extraction_claimed_at=utc_now())
+        ).rowcount == 1
+        db.commit()
+        if not claimed:
+            return False
+
         upload = db.get(Upload, upload_id)
-        UploadService(db, upload.user).extract_events(upload, pdf_bytes)
+        UploadService(db, upload.user).extract_events(upload)
+        return True

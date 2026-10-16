@@ -90,7 +90,13 @@ class Upload(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     filename: Mapped[str]
     raw_text: Mapped[str] = mapped_column(Text)
+    # The PDF's tables as JSON, saved at upload time with raw_text: together they're everything
+    # Claude needs, so the extraction job doesn't need the PDF (a Cloud Task holds at most ~1 MB).
+    tables_json: Mapped[str | None] = mapped_column(Text)
     status: Mapped[UploadStatus] = mapped_column(status_column_type(UploadStatus, "upload_status"))
+    # When an extraction job claimed this upload. Set only while still unset (compare-and-set),
+    # so a retried job can't call Claude - and pay - a second time.
+    extraction_claimed_at: Mapped[datetime | None]
     error_message: Mapped[str | None]
     # Set by Python (not the database's clock), because the daily limit compares it with utc_now().
     created_at: Mapped[datetime] = mapped_column(default=utc_now, server_default=func.now())

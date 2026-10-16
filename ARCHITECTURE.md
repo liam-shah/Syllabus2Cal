@@ -222,7 +222,7 @@ sequenceDiagram
     S->>S: read the text, check the limits (400 / 429)
     S->>D: save upload as PROCESSING (committed now)
     R-->>B: 202 Accepted {status: "processing"}
-    R->>C: after the response: extract_events(upload, bytes)
+    R->>C: after the response: run_extraction(upload id)
     C->>D: save all events + EXTRACTED (one transaction), or FAILED
     loop every 2 seconds while processing
         B->>R: GET /uploads/{id}
@@ -237,9 +237,16 @@ Details that matter:
   the time the task runs. The router gets a session *factory* from a dependency
   (`get_session_factory`), so tests can point the task at the test database.
 - **`UploadService` doesn't know it's running in the background.** `extract_events` is an
-  ordinary method that tests call directly. Only the small `extract_in_background` function
-  deals with sessions. Swapping `BackgroundTasks` for a real job queue later only changes that
+  ordinary method that tests call directly. Only the small `run_extraction` function deals
+  with sessions. Swapping `BackgroundTasks` for a real job queue later only changes that
   function and the line in the router that schedules it.
+- **The job gets only the upload's id.** `start_upload` saves the PDF's tables as JSON next to
+  its text, so nothing the job needs lives in the request. That's what lets a queue carry it:
+  a Cloud Task holds at most about 1 MB, and PDFs can be 10 MB.
+- **A job runs Claude at most once per upload.** `run_extraction` first claims the upload with
+  a compare-and-set (`UPDATE ... SET extraction_claimed_at = now WHERE status = 'processing'
+  AND extraction_claimed_at IS NULL`). A queue that retries a job, or two copies arriving at
+  once, can't pay for a second Claude call.
 - **A failure always ends `processing`.** If Claude fails, the upload is marked `FAILED` with the
   reason. If anything *unexpected* goes wrong, it's still marked `FAILED` before the error is
   re-raised, otherwise the page would wait forever.

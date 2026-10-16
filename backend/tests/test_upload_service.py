@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image, ImageDraw
 from sqlalchemy import func, select
+from sqlalchemy.orm import sessionmaker
 
 from app.domain import EventDraft, EventStatus, UploadStatus
 from app.errors import InvalidInputError, LimitReachedError, NotFoundError
@@ -13,7 +14,7 @@ from app.integrations import pdf_extraction
 from app.integrations.llm_extraction import LLMExtractionError
 from app.integrations.pdf_extraction import PDFExtractionError
 from app.models import ExtractedEvent, Upload, User, utc_now
-from app.services.upload_service import ABANDONED_MESSAGE, UploadLimits, UploadService
+from app.services.upload_service import ABANDONED_MESSAGE, UploadLimits, UploadService, run_extraction
 
 PDF_BYTES = (Path(__file__).parent / "fixtures" / "cpsc213_schedule_current.pdf").read_bytes()
 
@@ -35,7 +36,7 @@ def claude_fails(message):
 def upload_and_extract(service: UploadService, filename: str = "cpsc213.pdf") -> Upload:
     # Both steps, one after the other: what the route and its background job do together.
     upload = service.start_upload(filename, PDF_BYTES)
-    service.extract_events(upload, PDF_BYTES)
+    service.extract_events(upload)
     return upload
 
 
@@ -112,9 +113,62 @@ def test_an_unexpected_error_still_ends_processing(db, user):
 
     crash = patch("app.integrations.llm_extraction.extract_events", side_effect=RuntimeError("bug"))
     with crash, pytest.raises(RuntimeError):
-        service.extract_events(upload, PDF_BYTES)
+        service.extract_events(upload)
 
     assert db.get(Upload, upload.id).status is UploadStatus.FAILED
+
+
+# --- The extraction job (run by BackgroundTasks locally, Cloud Tasks when deployed) ----------
+
+def run_job(db, upload_id: int) -> bool:
+    # The job gets only the upload's id, and opens a database session of its own.
+    return run_extraction(sessionmaker(bind=db.get_bind()), upload_id)
+
+
+def test_the_job_needs_only_the_upload_id(db, user):
+    # The PDF itself is gone once the request ends: start_upload saved everything Claude needs.
+    upload = UploadService(db, user).start_upload("cpsc213.pdf", PDF_BYTES)
+
+    with claude_returns(DRAFTS) as mock_extract:
+        assert run_job(db, upload.id) is True
+
+    db.expire_all()
+    assert db.get(Upload, upload.id).status is UploadStatus.EXTRACTED
+    raw_text, tables = mock_extract.call_args.args
+    assert "Sep 14-18" in raw_text and len(tables) >= 1
+
+
+def test_running_the_job_twice_calls_claude_once(db, user):
+    # Cloud Tasks retries a job it thinks failed; a retry must not pay for Claude again.
+    upload = UploadService(db, user).start_upload("cpsc213.pdf", PDF_BYTES)
+
+    with claude_returns(DRAFTS) as mock_extract:
+        assert run_job(db, upload.id) is True
+        assert run_job(db, upload.id) is False
+
+    assert mock_extract.call_count == 1
+
+
+def test_the_job_skips_an_upload_another_run_has_already_claimed(db, user):
+    # A retry can arrive while the first run is still waiting for Claude.
+    upload = UploadService(db, user).start_upload("cpsc213.pdf", PDF_BYTES)
+    upload.extraction_claimed_at = utc_now()
+    db.commit()
+
+    with claude_returns(DRAFTS) as mock_extract:
+        assert run_job(db, upload.id) is False
+
+    mock_extract.assert_not_called()
+
+
+def test_the_job_skips_an_upload_that_is_no_longer_processing(db, user):
+    # e.g. it was given up on after 15 minutes: a very late job mustn't extract it after all.
+    given_up = add_past_upload(db, user, hours_ago=1, status=UploadStatus.FAILED)
+
+    with claude_returns(DRAFTS) as mock_extract:
+        assert run_job(db, given_up.id) is False
+
+    mock_extract.assert_not_called()
 
 
 def test_missing_upload_raises_not_found(db, user):

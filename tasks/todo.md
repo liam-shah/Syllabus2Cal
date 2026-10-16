@@ -171,15 +171,16 @@ The local BackgroundTasks path calls this same function, so the PDF bytes are no
 needed once the request ends.
 
 **Acceptance criteria:**
-- [ ] The background job receives only `upload_id`; the PDF bytes aren't kept after the request
-- [ ] Running the job twice for one upload calls Claude once (test with the fake LLM)
-- [ ] A new Alembic migration adds `tables_json` and `extraction_claimed_at` (both nullable).
+- [x] The background job receives only `upload_id`; the PDF bytes aren't kept after the request
+- [x] Running the job twice for one upload calls Claude once (test with the fake LLM)
+- [x] A new Alembic migration adds `tables_json` and `extraction_claimed_at` (both nullable).
   `test_migrations` passes on both databases. ADR `docs/adr/0002-extraction-job-contract.md`
   covers the payload limit and the claim.
 
 **Verification:**
-- [ ] Tests pass on both databases: `python -m pytest -q`
-- [ ] Manual check: upload locally; it goes from processing to extracted as before
+- [x] Tests pass on both databases: `python -m pytest -q`
+- [x] Manual check: upload locally; it goes from processing to extracted as before
+  (run against the s2c_dev Postgres with Claude faked: 2,288 chars of tables saved; two runs, one Claude call)
 
 **Dependencies:** Task 1
 

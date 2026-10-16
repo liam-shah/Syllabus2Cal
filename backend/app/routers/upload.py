@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.dependencies import get_session_factory, get_upload_service
 from app.schemas import UploadOut
-from app.services.upload_service import UploadService, extract_in_background
+from app.services.upload_service import UploadService, run_extraction
 
 router = APIRouter(tags=["uploads"])
 
@@ -36,7 +36,7 @@ def upload_pdf(
     pdf_bytes = read_limited(file)
     upload = service.start_upload(file.filename or "upload.pdf", pdf_bytes)
     # Runs after the response has been sent.
-    background_tasks.add_task(extract_in_background, session_factory, upload.id, pdf_bytes)
+    background_tasks.add_task(run_extraction, session_factory, upload.id)
     return upload
 
 
