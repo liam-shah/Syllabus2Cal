@@ -1,8 +1,10 @@
+import io
 from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from PIL import Image, ImageDraw
 from sqlalchemy import func, select
 
 from app.domain import EventDraft, EventStatus, UploadStatus
@@ -215,6 +217,22 @@ def test_a_pdf_with_too_much_text_is_refused_before_saving(db, user):
         UploadService(db, user, UploadLimits(max_text_chars=100)).start_upload("cpsc213.pdf", PDF_BYTES)
 
     assert count(db, Upload) == 0
+
+
+def scanned_pdf() -> bytes:
+    # A PDF holding only an image of a page, like a scan or a phone photo: the words are pixels.
+    page = Image.new("RGB", (600, 300), "white")
+    ImageDraw.Draw(page).text((20, 20), "Week 1  Lecture  Sep 14", fill="black")
+    pdf = io.BytesIO()
+    page.save(pdf, format="PDF")
+    return pdf.getvalue()
+
+
+def test_a_pdf_with_no_text_is_refused_before_saving(db, user):
+    with pytest.raises(InvalidInputError, match="no text"):
+        UploadService(db, user).start_upload("scanned.pdf", scanned_pdf())
+
+    assert count(db, Upload) == 0  # never saved, so it doesn't use up the daily allowance
 
 
 def test_the_real_schedule_fits_comfortably_under_the_default_text_limit():

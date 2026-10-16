@@ -118,6 +118,12 @@ class UploadService:
         )
 
     def _check_text_size(self, raw_text: str) -> None:
+        if not raw_text.strip():
+            # Claude only gets the text, so it would find nothing - don't pay for that call.
+            raise InvalidInputError(
+                "This PDF has no text in it, which usually means it's a scan or a photo of a page. "
+                "Try a PDF that was exported from a document, where you can select the text."
+            )
         if len(raw_text) > self._limits.max_text_chars:
             raise InvalidInputError(
                 f"This PDF has too much text to be a course schedule ({len(raw_text):,} characters; "
