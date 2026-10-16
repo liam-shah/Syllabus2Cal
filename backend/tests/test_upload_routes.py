@@ -2,7 +2,11 @@
 
 from datetime import timedelta
 
-from app.dependencies import get_upload_service
+from sqlalchemy import select
+
+from app.dependencies import get_extraction_queue, get_upload_service
+from app.domain import UploadStatus
+from app.integrations.cloud_tasks import QueueError
 from app.main import app
 from app.models import Upload, utc_now
 from app.services.upload_service import UploadLimits, UploadService
@@ -30,6 +34,34 @@ def test_an_upload_is_accepted_at_once_and_finished_in_the_background(client):
     assert finished["status"] == "extracted"
     events = client.get("/events/preview", params={"upload_id": finished["id"]}).json()
     assert {event["title"] for event in events} == {draft.title for draft in DRAFTS}
+
+
+def test_when_deployed_an_upload_is_handed_to_the_queue(client):
+    queued: list[int] = []
+    app.dependency_overrides[get_extraction_queue] = lambda: queued.append  # a fake Cloud Tasks queue
+
+    with claude_returns(DRAFTS) as mock_extract:
+        response = upload(client)
+
+    assert response.status_code == 202
+    assert queued == [response.json()["id"]]  # one task, carrying only the upload's id
+    mock_extract.assert_not_called()  # the queued task runs Claude, not this request
+    assert client.get(f"/uploads/{response.json()['id']}").json()["status"] == "processing"
+
+
+def test_if_the_queue_refuses_the_upload_is_failed_rather_left_processing(client, db):
+    def broken_queue(upload_id: int) -> None:
+        raise QueueError("Cloud Tasks refused the task (503)")
+
+    app.dependency_overrides[get_extraction_queue] = lambda: broken_queue
+
+    response = upload(client)
+
+    assert response.status_code == 502
+    db.expire_all()
+    saved = db.scalars(select(Upload)).one()
+    assert saved.status is UploadStatus.FAILED  # otherwise the page would poll it forever
+    assert "try again" in saved.error_message
 
 
 def test_a_file_that_is_not_a_pdf_is_a_400(client):

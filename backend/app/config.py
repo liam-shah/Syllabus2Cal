@@ -7,13 +7,16 @@ deployed copy of the app overrides them in its own environment.
 
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", env_file_encoding="utf-8")
+    # hide_input_in_errors: a startup error must never print the settings (API keys) into the logs.
+    model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", env_file_encoding="utf-8",
+                                      hide_input_in_errors=True)
 
     anthropic_api_key: str
     # Signs the session cookie, so a browser can't forge or edit it. Long and random; keep it secret.
@@ -29,8 +32,19 @@ class Settings(BaseSettings):
     backend_url: str = "http://localhost:8000"
 
     # Cloud Tasks (deployed only). Unset locally, where extraction uses BackgroundTasks.
+    cloud_tasks_queue: str | None = None  # "projects/<project>/locations/<region>/queues/<name>"
     service_url: str | None = None  # this Cloud Run service's own run.app URL: where tasks are sent
     tasks_service_account: str | None = None  # the account whose token every task carries
+
+    @model_validator(mode="after")
+    def queue_is_fully_configured(self) -> "Settings":
+        # Refuse to start half-configured: uploads would quietly fall back to BackgroundTasks,
+        # which Cloud Run starves of CPU once the response is sent.
+        if self.cloud_tasks_queue:
+            missing = [name for name in ("service_url", "tasks_service_account") if not getattr(self, name)]
+            if missing:
+                raise ValueError(f"CLOUD_TASKS_QUEUE is set, so these are needed too: {', '.join(m.upper() for m in missing)}")
+        return self
 
     @property
     def cookies_need_https(self) -> bool:

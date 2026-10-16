@@ -11,6 +11,7 @@ that long (Firebase Hosting gives up on a request after 60 seconds):
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -95,6 +96,15 @@ class UploadService:
         upload.status = UploadStatus.EXTRACTED
         self._db.commit()
 
+    def queue_extraction(self, upload: Upload, enqueue: Callable[[int], None]) -> None:
+        """Hand the upload's extraction job to a queue (Cloud Tasks when deployed)."""
+        try:
+            enqueue(upload.id)
+        except Exception:
+            # Nothing is coming to finish it, so end 'processing' now rather than in 15 minutes.
+            self._mark_failed(upload, "Couldn't start extracting events. Please try again.")
+            raise
+
     def _mark_failed(self, upload: Upload, reason: str) -> None:
         upload.status = UploadStatus.FAILED
         upload.error_message = reason
@@ -172,9 +182,7 @@ def run_extraction(session_factory: sessionmaker, upload_id: int) -> bool:
     session. Returns False without calling Claude when there's nothing to do: the upload is
     missing, no longer processing (e.g. given up on), or another run already claimed it.
     """
-    # shortcut: FastAPI BackgroundTasks run inside the web server's process, so a restart loses
-    # jobs that are running (get_upload then gives up on them). Move to a real queue (e.g.
-    # Cloud Tasks) before Cloud Run, which also slows the CPU down once a response is sent.
+    # Called by the worker route (Cloud Tasks, when deployed) or by BackgroundTasks (locally).
     with session_factory() as db:
         # Compare-and-set, like _give_up_on: the database only changes the row if nobody has
         # claimed it yet, so of two runs (a queue retrying, say) exactly one gets to call Claude.

@@ -61,6 +61,18 @@ def get_event_service(
     return EventService(db, user)
 
 
+ExtractionQueue = Callable[[int], None]  # queues the extraction job for an upload id
+
+
+def get_extraction_queue() -> ExtractionQueue | None:
+    """Where uploads send their extraction job: Cloud Tasks when deployed, or None locally
+    (the upload route then uses BackgroundTasks). Its own dependency so tests can fake it."""
+    if not settings.cloud_tasks_queue:
+        return None
+    return partial(cloud_tasks.enqueue_extraction, queue=settings.cloud_tasks_queue,
+                   service_url=settings.service_url, service_account=settings.tasks_service_account)
+
+
 TaskTokenVerifier = Callable[[str], None]  # raises TaskTokenError for a token not from our queue
 
 

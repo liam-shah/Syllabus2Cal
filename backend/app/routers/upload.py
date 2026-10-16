@@ -7,7 +7,7 @@ The workflow itself lives in UploadService.
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import sessionmaker
 
-from app.dependencies import get_session_factory, get_upload_service
+from app.dependencies import ExtractionQueue, get_extraction_queue, get_session_factory, get_upload_service
 from app.schemas import UploadOut
 from app.services.upload_service import UploadService, run_extraction
 
@@ -32,11 +32,15 @@ def upload_pdf(
     background_tasks: BackgroundTasks,
     service: UploadService = Depends(get_upload_service),
     session_factory: sessionmaker = Depends(get_session_factory),
+    queue: ExtractionQueue | None = Depends(get_extraction_queue),
 ):
     pdf_bytes = read_limited(file)
     upload = service.start_upload(file.filename or "upload.pdf", pdf_bytes)
-    # Runs after the response has been sent.
-    background_tasks.add_task(run_extraction, session_factory, upload.id)
+    if queue is not None:
+        service.queue_extraction(upload, queue)  # deployed: Cloud Tasks calls the worker route
+    else:
+        # Local development: runs in this process after the response has been sent.
+        background_tasks.add_task(run_extraction, session_factory, upload.id)
     return upload
 
 

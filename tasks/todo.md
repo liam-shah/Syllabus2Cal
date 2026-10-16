@@ -251,14 +251,16 @@ dependency, so tests swap in a fake. If queueing raises, the upload is marked `F
 a "please try again" message. This removes the `shortcut:` comment in `extract_in_background`.
 
 **Acceptance criteria:**
-- [ ] With the queue configured, an upload creates exactly one task that targets
+- [x] With the queue configured, an upload creates exactly one task that targets
   `SERVICE_URL`, has an OIDC audience of `SERVICE_URL` and carries only the upload id
   (checked with a fake queue)
-- [ ] With the queue unset, behaviour is identical to today (existing upload route tests pass)
-- [ ] A queueing failure leaves the upload `FAILED`, not stuck processing
+- [x] With the queue unset, behaviour is identical to today (existing upload route tests pass)
+- [x] A queueing failure leaves the upload `FAILED`, not stuck processing
 
 **Verification:**
-- [ ] Tests pass on both databases: `python -m pytest -q`
+- [x] Tests pass on both databases: `python -m pytest -q` (185 each). Also: a half-configured
+  queue (CLOUD_TASKS_QUEUE without SERVICE_URL / TASKS_SERVICE_ACCOUNT) stops the app starting,
+  and settings errors no longer print the settings (hide_input_in_errors)
 - [ ] Manual check (after Task 9): the Cloud Tasks console shows the task dispatched with a
   2xx response
 
