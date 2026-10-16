@@ -32,16 +32,16 @@ machine yet. Then start the test database:
 Test URL: `postgresql+psycopg://postgres:dev@localhost:5432/postgres`.
 
 **Acceptance criteria:**
-- [ ] `alembic upgrade head` then `downgrade base` works on an empty Postgres database, and
+- [x] `alembic upgrade head` then `downgrade base` works on an empty Postgres database, and
   `'processing'` can be stored in `uploads.status`
-- [ ] The whole backend suite passes with `TEST_DATABASE_URL` pointed at Postgres, and still
+- [x] The whole backend suite passes with `TEST_DATABASE_URL` pointed at Postgres, and still
   passes on SQLite with it unset
-- [ ] Postgres engines use `pool_pre_ping=True` (Neon pauses idle connections). ADR
+- [x] Postgres engines use `pool_pre_ping=True` (Neon pauses idle connections). ADR
   `docs/adr/0001-neon-postgres.md` is written.
 
 **Verification:**
-- [ ] Tests pass: `python -m pytest -q` (SQLite) and with `TEST_DATABASE_URL` set (Postgres)
-- [ ] Manual check: `DATABASE_URL=<postgres> alembic upgrade head`, then `uvicorn app.main:app`
+- [x] Tests pass: `python -m pytest -q` (SQLite) and with `TEST_DATABASE_URL` set (Postgres)
+- [x] Manual check: `DATABASE_URL=<postgres> alembic upgrade head`, then `uvicorn app.main:app`
   starts without the "database is behind" error
 
 **Dependencies:** None

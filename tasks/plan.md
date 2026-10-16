@@ -43,7 +43,7 @@ Region: **us-west1 (Oregon)** for Cloud Run and Cloud Tasks, with Neon in **AWS 
 ## Task List
 
 ### Phase 1: Foundation: correct on Postgres
-- [ ] Task 1: Backend runs and passes its tests on Postgres *(highest risk, so it goes first)*
+- [x] Task 1: Backend runs and passes its tests on Postgres *(highest risk, so it goes first)*
 - [ ] Task 2: Reject PDFs with no readable text
 - [ ] Task 3: Two syncs at once can't create duplicate calendar events
 - [ ] Task 4: Events sync in the user's own timezone
@@ -108,7 +108,7 @@ Tasks 4, 7 ── Task 8 container + /api ── Task 9 first deploy ── Task
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Migration `7339f928223f` leaves the old `upload_status` CHECK constraint on Postgres (batch mode only rebuilds tables on SQLite), so inserting `'processing'` fails | High | Task 1 runs `test_migrations.py` on Postgres first. If it fails, add a Postgres-only drop-and-recreate of the constraint inside that migration. Neon starts empty, so no existing data needs fixing. |
+| ~~Migration `7339f928223f` leaves the old `upload_status` CHECK constraint on Postgres~~ **Resolved in Task 1:** the constraint is replaced correctly; a test covers it on both databases | — | Task 1 runs `test_migrations.py` on Postgres first. If it fails, add a Postgres-only drop-and-recreate of the constraint inside that migration. Neon starts empty, so no existing data needs fixing. |
 | The worker route is public, so a token check that's too loose lets anyone trigger extraction | Med (the claim limits harm: each processing upload runs at most once, and nothing is read or returned) | Task 6 tests a missing token, the wrong audience, the wrong service-account email and an unverified email. The token checker is a dependency so tests can fake it. |
 | Docker isn't installed on this machine yet | Blocks Tasks 1 and 8 locally | Install Docker Desktop (with WSL 2) before Task 1. CI uses its own Postgres service container regardless. |
 | A Cloud Tasks retry pays for Claude twice | High (money) | Compare-and-set claim (Task 5), `max-attempts` kept low on the queue (Task 9), plus a unit test for an upload that's already claimed |
