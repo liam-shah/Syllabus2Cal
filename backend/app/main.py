@@ -5,6 +5,7 @@ Run from backend/ with:
     uvicorn app.main:app --reload --port 8000
 """
 
+import math
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -20,6 +21,7 @@ from app.errors import (
     ConflictError,
     ExternalServiceError,
     InvalidInputError,
+    LimitReachedError,
     NotFoundError,
     NotSignedInError,
 )
@@ -32,6 +34,7 @@ ERROR_STATUS_CODES: dict[type[AppError], int] = {
     NotFoundError: 404,
     InvalidInputError: 400,
     ConflictError: 409,
+    LimitReachedError: 429,
     ExternalServiceError: 502,
 }
 
@@ -84,7 +87,11 @@ app.add_middleware(
 @app.exception_handler(AppError)
 async def handle_app_error(request: Request, error: AppError) -> JSONResponse:
     # Same {"detail": ...} shape as FastAPI's own HTTPException responses.
-    return JSONResponse(status_code=status_code_for(error), content={"detail": str(error)})
+    headers = {}
+    if isinstance(error, LimitReachedError):
+        # The standard way to tell any client (not just ours) when to try again, in seconds.
+        headers["Retry-After"] = str(math.ceil(error.retry_after.total_seconds()))
+    return JSONResponse(status_code=status_code_for(error), content={"detail": str(error)}, headers=headers)
 
 
 app.include_router(auth.router)

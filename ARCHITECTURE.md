@@ -271,6 +271,7 @@ classDiagram
     AppError <|-- NotFoundError
     AppError <|-- InvalidInputError
     AppError <|-- ConflictError
+    AppError <|-- LimitReachedError
     AppError <|-- ExternalServiceError
     InvalidInputError <|-- PDFExtractionError
     ConflictError <|-- GoogleNotConnectedError
@@ -281,7 +282,7 @@ classDiagram
 ```
 
 `main.py` registers one handler for `AppError` and maps each category to an HTTP status
-(`NotSignedInError` -> 401, `NotFoundError` -> 404, `InvalidInputError` -> 400, `ConflictError` -> 409,
+(`NotSignedInError` -> 401, `NotFoundError` -> 404, `InvalidInputError` -> 400, `ConflictError` -> 409, `LimitReachedError` -> 429,
 `ExternalServiceError` -> 502). When I added `ConflictError` for "you can't edit a synced
 event", the only other change needed was one line in that map. This is the
 same idea as the exception hierarchies from CPSC 210: code that handles the parent type
@@ -504,6 +505,23 @@ migration and refuses to start (with the command to run) if it isn't, instead of
 first request. A test checks that running every migration produces exactly the schema
 `models.py` describes, so a model change without a migration can't slip through.
 
+**Usage limits, because every upload costs money.** Each upload is a paid Claude call, so once
+anyone can sign in, someone could run up my bill. `UploadService` checks two limits *before*
+calling Claude, so a refused upload costs nothing:
+
+- **10 uploads per user in any rolling 24 hours** (`UPLOADS_PER_DAY`). This is counted straight
+  from the `uploads` table, so there's no separate counter to keep in sync. Failed extractions
+  count, because the Claude call was still paid for. Unreadable files don't, because they're
+  rejected before Claude and never saved. The 429 response includes the standard `Retry-After`
+  header, and the message says roughly when a slot frees up.
+- **50,000 characters of PDF text** (about 12k tokens), so a 10 MB PDF can't become one huge
+  prompt. A real schedule is around 2,400 characters, and a test keeps the limit at least 10
+  times bigger than that.
+
+The limits are an `UploadLimits` object passed into `UploadService`, like the database session
+and the user. Tests pass tiny limits instead of creating ten uploads, and the real values come
+from settings in one place (`dependencies.py`).
+
 **No repository layer (on purpose).** Some architectures put every database query in a
 separate repository class. At this size that would just add another layer to click through,
 so services use the SQLAlchemy session directly. If the queries grow, that's where I'd split
@@ -531,6 +549,10 @@ them out.
   Run them from `frontend/` with `npm test`.
 
 ## Known limitations and future work
+
+- **Limits under concurrency.** The upload limit is check-then-act: two uploads sent at exactly the
+  same moment could both pass the check and go one over the limit. That's fine as a cost cap.
+  Making it exact would need a row lock, or a counter updated atomically in the database.
 
 - **Same-site hosting.** The session cookie is `SameSite=Lax`, so the frontend and backend have
   to be the same *site* when deployed: either one domain (Firebase Hosting forwarding `/api` to

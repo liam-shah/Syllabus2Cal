@@ -7,8 +7,12 @@ each kind to an HTTP status code, so new errors only need the right parent class
     ├── NotFoundError          (404)
     ├── InvalidInputError      (400)   e.g. PDFExtractionError
     ├── ConflictError          (409)   e.g. editing an event that's already synced
+    ├── LimitReachedError      (429)   e.g. too many uploads today
     └── ExternalServiceError   (502)   e.g. LLMExtractionError, GoogleCalendarError
 """
+
+
+from datetime import timedelta
 
 
 class AppError(Exception):
@@ -29,6 +33,14 @@ class InvalidInputError(AppError):
 
 class ConflictError(AppError):
     """The request is valid, but the item's current state doesn't allow it."""
+
+
+class LimitReachedError(AppError):
+    """The user has used up an allowance (e.g. uploads per day). Trying again later will work."""
+
+    def __init__(self, message: str, retry_after: timedelta):
+        super().__init__(message)
+        self.retry_after = retry_after  # how long until it's allowed again
 
 
 class ExternalServiceError(AppError):

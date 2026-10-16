@@ -3,7 +3,9 @@
 import pytest
 
 from app.config import settings
-from app.errors import AppError, NotFoundError
+from datetime import timedelta
+
+from app.errors import AppError, LimitReachedError, NotFoundError
 from app.integrations.google_calendar import GoogleCalendarError
 from app.integrations.llm_extraction import LLMExtractionError
 from app.integrations.pdf_extraction import PDFExtractionError
@@ -54,6 +56,7 @@ def test_responses_only_grant_read_access_to_the_frontend(client):
         (PDFExtractionError("x"), 400),
         (LLMExtractionError("x"), 502),
         (GoogleCalendarError("x"), 502),
+        (LimitReachedError("x", retry_after=timedelta(hours=1)), 429),
         (AppError("x"), 500),  # an AppError with no category mapped is visible, not hidden
     ],
 )
@@ -65,3 +68,4 @@ def test_errors_reach_the_client_as_json_detail(client):
     response = client.get("/uploads/999")
     assert response.status_code == 404
     assert response.json() == {"detail": "Upload not found"}
+

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     google_client_secret_path: Path = BACKEND_DIR / "client_secret.json"
     database_url: str = f"sqlite:///{(BACKEND_DIR / 'app.db').as_posix()}"
 
+    # Each upload costs a Claude call, so each user gets this many per rolling 24 hours.
+    uploads_per_day: int = 10
+
     # Where each half of the app is running. Used for CORS and the Google sign-in redirects.
     frontend_url: str = "http://localhost:5173"
     backend_url: str = "http://localhost:8000"

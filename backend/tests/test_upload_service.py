@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -6,11 +6,11 @@ import pytest
 from sqlalchemy import func, select
 
 from app.domain import EventDraft, EventStatus, UploadStatus
-from app.errors import NotFoundError
+from app.errors import InvalidInputError, LimitReachedError, NotFoundError
 from app.integrations.llm_extraction import LLMExtractionError
 from app.integrations.pdf_extraction import PDFExtractionError
-from app.models import ExtractedEvent, Upload, User
-from app.services.upload_service import UploadService
+from app.models import ExtractedEvent, Upload, User, utc_now
+from app.services.upload_service import UploadLimits, UploadService
 
 PDF_BYTES = (Path(__file__).parent / "fixtures" / "cpsc213_schedule_current.pdf").read_bytes()
 
@@ -94,3 +94,86 @@ def test_another_users_upload_looks_like_it_does_not_exist(db, user):
         UploadService(db, user).get_upload(their_upload.id)
     with pytest.raises(NotFoundError):
         UploadService(db, user).get_events(their_upload.id)
+
+
+# --- Limits ------------------------------------------------------------------------------
+
+def add_past_upload(db, user, hours_ago: float, status=UploadStatus.EXTRACTED) -> Upload:
+    upload = Upload(user=user, filename="old.pdf", raw_text="...", status=status,
+                    created_at=utc_now() - timedelta(hours=hours_ago))
+    db.add(upload)
+    db.commit()
+    return upload
+
+
+def test_uploads_are_allowed_up_to_the_daily_limit(db, user):
+    add_past_upload(db, user, hours_ago=1)
+    with claude_returns(DRAFTS):
+        UploadService(db, user, UploadLimits(per_day=2)).process_pdf("cpsc213.pdf", PDF_BYTES)  # the 2nd: fine
+    assert count(db, Upload) == 2
+
+
+def test_one_more_is_refused_without_calling_claude_or_saving(db, user):
+    add_past_upload(db, user, hours_ago=1)
+    add_past_upload(db, user, hours_ago=2)
+
+    with claude_returns(DRAFTS) as mock_extract, pytest.raises(LimitReachedError, match="limit of 2 uploads per day"):
+        UploadService(db, user, UploadLimits(per_day=2)).process_pdf("cpsc213.pdf", PDF_BYTES)
+
+    mock_extract.assert_not_called()
+    assert count(db, Upload) == 2
+
+
+def test_the_refusal_says_when_a_slot_frees_up(db, user):
+    # The older of the two (20 hours ago) stops counting 4 hours from now.
+    add_past_upload(db, user, hours_ago=20)
+    add_past_upload(db, user, hours_ago=1)
+
+    with pytest.raises(LimitReachedError, match="in about 4 hours") as refused:
+        UploadService(db, user, UploadLimits(per_day=2)).process_pdf("cpsc213.pdf", PDF_BYTES)
+    assert timedelta(hours=3, minutes=59) < refused.value.retry_after <= timedelta(hours=4)
+
+
+def test_uploads_older_than_a_day_stop_counting(db, user):
+    add_past_upload(db, user, hours_ago=25)
+    with claude_returns(DRAFTS):
+        UploadService(db, user, UploadLimits(per_day=1)).process_pdf("cpsc213.pdf", PDF_BYTES)
+
+
+def test_failed_extractions_still_count(db, user):
+    # The Claude call was made (and paid for) even though it failed.
+    add_past_upload(db, user, hours_ago=1, status=UploadStatus.FAILED)
+    with pytest.raises(LimitReachedError):
+        UploadService(db, user, UploadLimits(per_day=1)).process_pdf("cpsc213.pdf", PDF_BYTES)
+
+
+def test_unreadable_files_do_not_use_up_the_allowance(db, user):
+    service = UploadService(db, user, UploadLimits(per_day=1))
+    with pytest.raises(PDFExtractionError):
+        service.process_pdf("notes.pdf", b"not a pdf")
+    with claude_returns(DRAFTS):
+        service.process_pdf("cpsc213.pdf", PDF_BYTES)  # still allowed
+
+
+def test_each_user_has_their_own_allowance(db, user):
+    someone_else = User(google_subject="google-someone-else")
+    db.add(someone_else)
+    db.commit()
+    add_past_upload(db, someone_else, hours_ago=1)
+
+    with claude_returns(DRAFTS):
+        UploadService(db, user, UploadLimits(per_day=1)).process_pdf("cpsc213.pdf", PDF_BYTES)
+
+
+def test_a_pdf_with_too_much_text_is_refused_before_claude(db, user):
+    with claude_returns(DRAFTS) as mock_extract, pytest.raises(InvalidInputError, match="too much text"):
+        UploadService(db, user, UploadLimits(max_text_chars=100)).process_pdf("cpsc213.pdf", PDF_BYTES)
+
+    mock_extract.assert_not_called()
+    assert count(db, Upload) == 0
+
+
+def test_the_real_schedule_fits_comfortably_under_the_default_text_limit():
+    # Guards the default: if this fails, the limit would refuse real syllabi.
+    from app.integrations import pdf_extraction
+    assert len(pdf_extraction.extract_text(PDF_BYTES)) * 10 < UploadLimits().max_text_chars

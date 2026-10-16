@@ -8,6 +8,7 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from app import session_cookie
+from app.config import settings
 from app.db import get_db
 from app.errors import NotSignedInError
 from app.integrations.google_calendar import GoogleCalendarClient
@@ -15,7 +16,7 @@ from app.models import User
 from app.services.auth_service import AuthService
 from app.services.event_service import EventService
 from app.services.sync_service import CalendarFactory, SyncService
-from app.services.upload_service import UploadService
+from app.services.upload_service import UploadLimits, UploadService
 
 
 def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
@@ -40,7 +41,7 @@ def get_upload_service(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> UploadService:
-    return UploadService(db, user)
+    return UploadService(db, user, UploadLimits(per_day=settings.uploads_per_day))
 
 
 def get_event_service(
