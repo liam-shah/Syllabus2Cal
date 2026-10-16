@@ -1,6 +1,5 @@
-"""The Alembic migrations, run against real (throwaway) SQLite files."""
-
-from pathlib import Path
+"""The Alembic migrations, run against a real (throwaway) database: a SQLite file, or
+TEST_DATABASE_URL when it's set (see conftest.py)."""
 
 import pytest
 from alembic import command
@@ -8,6 +7,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from app.config import BACKEND_DIR
 from app.db import Base, create_db_engine, ensure_database_is_up_to_date
@@ -16,9 +16,9 @@ BASELINE = "99d09efe8ba7"  # migrations/versions/99d09efe8ba7_initial_schema.py
 
 
 @pytest.fixture
-def database(tmp_path: Path):
-    """An empty SQLite file, plus an Alembic config pointed at it."""
-    url = f"sqlite:///{(tmp_path / 'test.db').as_posix()}"
+def database(empty_database_url: str):
+    """An empty database, plus an Alembic config pointed at it."""
+    url = empty_database_url
     config = Config(BACKEND_DIR / "alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
     engine = create_db_engine(url)
@@ -47,7 +47,7 @@ def test_upgrading_an_existing_database_keeps_its_data(database):
         ))
         connection.execute(text(
             "INSERT INTO extracted_events (upload_id, title, start_date, date_is_approximate, included, status) "
-            "VALUES (1, 'Lab L1', '2026-09-21', 1, 0, 'pending_review')"
+            "VALUES (1, 'Lab L1', '2026-09-21', TRUE, FALSE, 'pending_review')"
         ))
 
     command.upgrade(config, "head")
@@ -57,6 +57,18 @@ def test_upgrading_an_existing_database_keeps_its_data(database):
         # uploads was rebuilt to allow the new status: its rows (and the events' links to them) survive.
         connection.execute(text("UPDATE uploads SET status = 'processing' WHERE id = 1"))
     assert rows == [("Lab L1", None)]  # data kept; the new column starts empty
+
+
+def test_the_migrated_status_constraint_still_rejects_unknown_values(database):
+    # Changing the allowed statuses must replace the CHECK constraint, not just drop it.
+    config, engine = database
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users (id) VALUES (1)"))
+    with pytest.raises(IntegrityError, match="(?i)check constraint"), engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO uploads (user_id, filename, raw_text, status) VALUES (1, 'a.pdf', '...', 'bogus')"
+        ))
 
 
 def test_undoing_the_processing_status_fails_uploads_that_were_mid_extraction(database):

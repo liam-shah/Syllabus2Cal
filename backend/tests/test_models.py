@@ -57,7 +57,8 @@ def test_status_is_stored_as_its_value_not_its_name(db, user):
 def test_database_rejects_an_unknown_status(db, user):
     # Bypasses Python entirely - proves the CHECK constraint lives in the database itself.
     event = save_event(db, user)
-    with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+    # SQLite says "CHECK constraint failed", Postgres "violates check constraint".
+    with pytest.raises(IntegrityError, match="(?i)check constraint"):
         db.execute(text("UPDATE extracted_events SET status = 'synched' WHERE id = :id"), {"id": event.id})
 
 
