@@ -4,6 +4,7 @@ python-multipart
 itsdangerous
 pydantic
 pydantic-settings
+tzdata
 sqlalchemy
 alembic
 psycopg[binary]

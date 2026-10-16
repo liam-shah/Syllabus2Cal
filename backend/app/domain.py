@@ -4,6 +4,7 @@ import re
 from datetime import date
 from enum import StrEnum
 from typing import Annotated
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -18,6 +19,19 @@ def check_time_of_day(value: str) -> str:
 
 
 TimeOfDay = Annotated[str, AfterValidator(check_time_of_day)]
+
+
+def check_time_zone(value: str) -> str:
+    # Checked here, so a bad value is one clear error instead of Google rejecting every event.
+    # ValueError covers "" and path tricks like "../etc/passwd"; NotFound covers unknown names.
+    try:
+        ZoneInfo(value)
+    except (ValueError, ZoneInfoNotFoundError):
+        raise ValueError("use an IANA time zone like America/Vancouver") from None
+    return value
+
+
+TimeZone = Annotated[str, AfterValidator(check_time_zone)]  # e.g. "America/Toronto"
 
 
 class UploadStatus(StrEnum):

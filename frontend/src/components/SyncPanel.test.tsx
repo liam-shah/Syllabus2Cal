@@ -79,7 +79,7 @@ describe('syncing', () => {
     expect(screen.getByRole('checkbox', { name: 'Include Lecture' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Edit Lecture' })).toBeDisabled()
     const syncCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/events/sync'))
-    expect(syncCall?.[0]).toBe('http://api.test/events/sync?upload_id=7')
+    expect(syncCall?.[0]).toBe('http://api.test/events/sync?upload_id=7&time_zone=America%2FVancouver')
     expect(syncCall?.[1]?.method).toBe('POST')
 
     respond(jsonResponse([synced(LECTURE), synced(LAB)]))

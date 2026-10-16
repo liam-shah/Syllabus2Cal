@@ -63,6 +63,11 @@ def test_missing_event_is_a_404(client):
 
 # --- POST /events/sync ---------------------------------------------------------------------
 
+def sync(client, upload_id: int, time_zone: str = "America/Toronto"):
+    # The browser sends its own IANA time zone with every sync.
+    return client.post("/events/sync", params={"upload_id": upload_id, "time_zone": time_zone})
+
+
 @pytest.fixture
 def fake_calendar(client):
     calendar = FakeCalendar()
@@ -75,20 +80,39 @@ def test_sync_returns_the_attempted_events_with_their_new_status(client, db, use
     user.google_credentials_json = '{"token": "saved"}'
     db.commit()
 
-    response = client.post("/events/sync", params={"upload_id": event.upload_id})
+    response = sync(client, event.upload_id)
 
     assert response.status_code == 200
     [synced] = response.json()
     assert (synced["id"], synced["status"]) == (event.id, "synced")
     assert synced["google_event_id"] == fake_calendar.inserted[0][1]
+    assert fake_calendar.time_zones == ["America/Toronto"]
 
 
 def test_sync_without_a_google_connection_is_a_409(client, event, fake_calendar):
-    response = client.post("/events/sync", params={"upload_id": event.upload_id})
+    response = sync(client, event.upload_id)
     assert response.status_code == 409
     assert response.json() == {"detail": "Connect Google Calendar before syncing."}
     assert fake_calendar.inserted == []
 
 
 def test_syncing_a_missing_upload_is_a_404(client, fake_calendar):
-    assert client.post("/events/sync", params={"upload_id": 999}).status_code == 404
+    assert sync(client, 999).status_code == 404
+
+
+@pytest.mark.parametrize("time_zone", ["Mars/Olympus", "", "../etc/passwd"])
+def test_an_unknown_time_zone_is_refused_before_google_is_contacted(client, db, user, event, fake_calendar, time_zone):
+    event.included = True
+    user.google_credentials_json = '{"token": "saved"}'
+    db.commit()
+
+    response = sync(client, event.upload_id, time_zone=time_zone)
+
+    assert response.status_code == 422
+    assert "IANA time zone" in response.text
+    assert fake_calendar.inserted == []
+
+
+def test_syncing_without_a_time_zone_is_refused(client, event, fake_calendar):
+    response = client.post("/events/sync", params={"upload_id": event.upload_id})
+    assert response.status_code == 422

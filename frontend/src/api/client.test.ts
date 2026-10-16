@@ -113,13 +113,14 @@ describe('api client', () => {
     })
   })
 
-  it('starts a sync with a POST for that upload', async () => {
+  it("starts a sync with a POST for that upload, in the browser's time zone", async () => {
     const fetchMock = mockFetch(() => jsonResponse([]))
 
     await api.syncEvents(7)
 
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('http://api.test/events/sync?upload_id=7')
+    // Tests run with TZ=America/Vancouver (vite.config.ts), so that's the browser's zone here.
+    expect(url).toBe('http://api.test/events/sync?upload_id=7&time_zone=America%2FVancouver')
     expect(init?.method).toBe('POST')
   })
 

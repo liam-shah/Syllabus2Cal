@@ -107,7 +107,11 @@ export const api = {
 
   /** Sync the upload's ticked events; returns the events it attempted, with their new status. */
   syncEvents(uploadId: number): Promise<ExtractedEvent[]> {
-    const query = new URLSearchParams({ upload_id: String(uploadId) })
+    const query = new URLSearchParams({
+      upload_id: String(uploadId),
+      // The browser's IANA zone (e.g. "America/Toronto"): a PDF's "14:00" lands at 14:00 local time.
+      time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    })
     return request<ExtractedEvent[]>(`/events/sync?${query}`, { method: 'POST' })
   },
 }

@@ -123,15 +123,16 @@ The backend checks it with `zoneinfo` and passes it to `build_event_body`. Add `
 because Windows and slim Linux images have no timezone database.
 
 **Acceptance criteria:**
-- [ ] `POST /events/sync?upload_id=&time_zone=America/Toronto` creates timed events in
+- [x] `POST /events/sync?upload_id=&time_zone=America/Toronto` creates timed events in
   Toronto time; all-day events are unaffected
-- [ ] An unknown timezone gets a 400 before Google is contacted
-- [ ] The frontend always sends the browser's timezone
+- [x] An unknown timezone gets a 422 before Google is contacted (FastAPI's validation status,
+  like the edit form's; the frontend shows it as a readable sentence)
+- [x] The frontend always sends the browser's timezone
 
 **Verification:**
-- [ ] Tests pass: `python -m pytest -q tests/test_google_calendar.py tests/test_sync_service.py tests/test_event_routes.py`
-- [ ] Tests pass: `npm test` (`client.test.ts` checks the query string)
-- [ ] Manual check: set the OS timezone to Toronto, sync a 09:00 lecture, and Google
+- [x] Tests pass: `python -m pytest -q tests/test_google_calendar.py tests/test_sync_service.py tests/test_event_routes.py`
+- [x] Tests pass: `npm test` (`client.test.ts` checks the query string)
+- [ ] *(not done yet: needs your Google account)* Manual check: set the OS timezone to Toronto, sync a 09:00 lecture, and Google
   Calendar shows 09:00 Toronto time
 
 **Dependencies:** Task 3 (same file: `sync_service.py`)

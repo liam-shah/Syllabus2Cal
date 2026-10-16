@@ -41,8 +41,9 @@ class SyncService:
         self._uploads = uploads
         self._open_calendar = open_calendar
 
-    def sync_upload(self, upload_id: int) -> list[ExtractedEvent]:
-        """Sync every ticked, not-yet-synced event. Returns the events it attempted."""
+    def sync_upload(self, upload_id: int, time_zone: str) -> list[ExtractedEvent]:
+        """Sync every ticked, not-yet-synced event, with timed events placed in time_zone
+        (an IANA name, already checked). Returns the events it attempted."""
         events = [event for event in self._uploads.get_events(upload_id) if event.is_waiting_to_sync]
 
         if self._user.google_credentials_json is None:
@@ -53,20 +54,20 @@ class SyncService:
         calendar = self._open_calendar(self._user.google_credentials_json)  # may refresh the token
         try:
             for event in events:
-                self._sync_one(calendar, event)
+                self._sync_one(calendar, event, time_zone)
         finally:
             # Even if we stopped early, keep the refreshed token so the next sync can use it.
             self._user.google_credentials_json = calendar.credentials_json
             self._db.commit()
         return events
 
-    def _sync_one(self, calendar: GoogleCalendarClient, event: ExtractedEvent) -> None:
+    def _sync_one(self, calendar: GoogleCalendarClient, event: ExtractedEvent, time_zone: str) -> None:
         # Save the key *before* contacting Google: if we crash after Google creates the event
         # but before we record it, the retry sends the same key and can't create a duplicate.
         sync_key = self._claim_sync_key(event)
 
         try:
-            event.mark_synced(calendar.insert_event(event.to_draft(), sync_key))
+            event.mark_synced(calendar.insert_event(event.to_draft(), sync_key, time_zone))
         except GoogleAuthError:
             raise  # every remaining event would fail the same way, so stop and say "reconnect"
         except GoogleCalendarError as e:

@@ -15,6 +15,7 @@ from app.integrations.google_calendar import (
 )
 
 LAB = EventDraft(title="Lab L1", start_date=date(2026, 9, 21), date_is_approximate=False)
+TORONTO = "America/Toronto"  # any IANA name the browser could send
 
 
 def google_error(status: int, message: str, reason: str) -> HttpError:
@@ -39,7 +40,7 @@ def client_whose_insert(result=None, raises: Exception | None = None):
 def test_insert_sends_our_event_id_to_google():
     client, service = client_whose_insert(result={"id": "abc12345"})
 
-    assert client.insert_event(LAB, "abc12345") == "abc12345"
+    assert client.insert_event(LAB, "abc12345", TORONTO) == "abc12345"
     body = service.events.return_value.insert.call_args.kwargs["body"]
     assert body["id"] == "abc12345"
     assert body["summary"] == "Lab L1"
@@ -47,53 +48,62 @@ def test_insert_sends_our_event_id_to_google():
 
 def test_a_duplicate_id_means_the_event_is_already_there():
     client, _ = client_whose_insert(raises=google_error(409, "The requested identifier already exists.", "duplicate"))
-    assert client.insert_event(LAB, "abc12345") == "abc12345"
+    assert client.insert_event(LAB, "abc12345", TORONTO) == "abc12345"
 
 
 def test_other_conflicts_are_not_mistaken_for_success():
     client, _ = client_whose_insert(raises=google_error(409, "Something else conflicted.", "conflict"))
     with pytest.raises(GoogleCalendarError):
-        client.insert_event(LAB, "abc12345")
+        client.insert_event(LAB, "abc12345", TORONTO)
 
 
 def test_a_rejected_sign_in_is_its_own_error():
     client, _ = client_whose_insert(raises=google_error(401, "Invalid Credentials", "authError"))
     with pytest.raises(GoogleAuthError, match="reconnect"):
-        client.insert_event(LAB, "abc12345")
+        client.insert_event(LAB, "abc12345", TORONTO)
 
 
 def test_other_rejections_give_a_short_readable_reason():
     client, _ = client_whose_insert(raises=google_error(400, "Bad Request", "invalid"))
     with pytest.raises(GoogleCalendarError) as caught:
-        client.insert_event(LAB, "abc12345")
+        client.insert_event(LAB, "abc12345", TORONTO)
     assert not isinstance(caught.value, GoogleAuthError)
     assert str(caught.value) == "Google Calendar rejected this event (400: Bad Request)"
 
 
 def test_all_day_event_ends_the_next_day():
-    body = build_event_body(EventDraft(title="Lab L1", start_date=date(2026, 9, 21), date_is_approximate=False))
+    body = build_event_body(EventDraft(title="Lab L1", start_date=date(2026, 9, 21), date_is_approximate=False), TORONTO)
     assert body["start"] == {"date": "2026-09-21"}
     assert body["end"] == {"date": "2026-09-22"}
 
 
 def test_approximate_date_is_noted_in_description():
     body = build_event_body(EventDraft(title="Lab L1", start_date=date(2026, 9, 21),
-                                       date_is_approximate=True, description="Lab"))
+                                       date_is_approximate=True, description="Lab"), TORONTO)
     assert body["description"].startswith("Date approximate")
     assert body["description"].endswith("Lab")
 
 
-def test_timed_event_defaults_to_one_hour():
+def test_timed_event_defaults_to_one_hour_in_the_given_time_zone():
+    # The wall-clock time from the PDF, in the syncing person's own time zone (not Vancouver's).
     body = build_event_body(EventDraft(title="Lecture", start_date=date(2026, 9, 22),
-                                       start_time="14:00", date_is_approximate=False))
-    assert body["start"] == {"dateTime": "2026-09-22T14:00:00", "timeZone": "America/Vancouver"}
-    assert body["end"] == {"dateTime": "2026-09-22T15:00:00", "timeZone": "America/Vancouver"}
+                                       start_time="14:00", date_is_approximate=False), TORONTO)
+    assert body["start"] == {"dateTime": "2026-09-22T14:00:00", "timeZone": "America/Toronto"}
+    assert body["end"] == {"dateTime": "2026-09-22T15:00:00", "timeZone": "America/Toronto"}
+
+
+def test_insert_sends_the_time_zone_to_google():
+    client, service = client_whose_insert(result={"id": "abc12345"})
+    timed = EventDraft(title="Lecture", start_date=date(2026, 9, 22), start_time="14:00", date_is_approximate=False)
+    client.insert_event(timed, "abc12345", TORONTO)
+    body = service.events.return_value.insert.call_args.kwargs["body"]
+    assert body["start"]["timeZone"] == "America/Toronto"
 
 
 def test_location_is_sent_when_present():
     with_location = build_event_body(EventDraft(title="Lab", start_date=date(2026, 9, 21),
-                                                date_is_approximate=False, location="ICCS 005"))
+                                                date_is_approximate=False, location="ICCS 005"), TORONTO)
     without_location = build_event_body(EventDraft(title="Lab", start_date=date(2026, 9, 21),
-                                                   date_is_approximate=False))
+                                                   date_is_approximate=False), TORONTO)
     assert with_location["location"] == "ICCS 005"
     assert "location" not in without_location

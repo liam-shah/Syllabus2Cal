@@ -17,7 +17,6 @@ from app.errors import ExternalServiceError
 
 # Create, change and delete events - but not read the rest of the user's calendar.
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
-TIMEZONE = "America/Vancouver"
 
 
 class GoogleCalendarError(ExternalServiceError):
@@ -52,7 +51,9 @@ def load_credentials(credentials_json: str) -> Credentials:
     return credentials
 
 
-def build_event_body(event: EventDraft) -> dict:
+def build_event_body(event: EventDraft, time_zone: str) -> dict:
+    """time_zone: an IANA name like "America/Toronto". A PDF's "14:00" means 14:00 wherever the
+    person syncing is, so timed events are placed in their time zone."""
     description = event.description or ""
     if event.date_is_approximate:
         description = (
@@ -70,8 +71,8 @@ def build_event_body(event: EventDraft) -> dict:
             end = datetime.combine(event.start_date, time.fromisoformat(event.end_time))
         else:
             end = start + timedelta(hours=1)
-        body["start"] = {"dateTime": start.isoformat(), "timeZone": TIMEZONE}
-        body["end"] = {"dateTime": end.isoformat(), "timeZone": TIMEZONE}
+        body["start"] = {"dateTime": start.isoformat(), "timeZone": time_zone}
+        body["end"] = {"dateTime": end.isoformat(), "timeZone": time_zone}
     else:
         # All-day events: Google treats the end date as exclusive, so end = the next day.
         body["start"] = {"date": event.start_date.isoformat()}
@@ -108,14 +109,14 @@ class GoogleCalendarClient:
         """The (possibly refreshed) credentials, to save back onto the user afterwards."""
         return self._credentials.to_json()
 
-    def insert_event(self, event: EventDraft, event_id: str) -> str:
+    def insert_event(self, event: EventDraft, event_id: str, time_zone: str) -> str:
         """Create the event with *our* ID and return it. Safe to call twice with the same ID.
 
         Google refuses a second event with an ID that already exists (409 "duplicate"). The
         only way that happens here is a retry of an attempt that actually succeeded, so that
         refusal means the event is already in the calendar - which is exactly the goal.
         """
-        body = build_event_body(event) | {"id": event_id}
+        body = build_event_body(event, time_zone) | {"id": event_id}
         try:
             created = self._service.events().insert(calendarId="primary", body=body).execute()
         except HttpError as e:
