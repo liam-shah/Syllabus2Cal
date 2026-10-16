@@ -3,5 +3,6 @@
 
 export const queryKeys = {
   authStatus: ['auth-status'] as const,
+  upload: (uploadId: number) => ['upload', uploadId] as const,
   events: (uploadId: number) => ['events', uploadId] as const,
 }

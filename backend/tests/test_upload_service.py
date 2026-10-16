@@ -7,10 +7,11 @@ from sqlalchemy import func, select
 
 from app.domain import EventDraft, EventStatus, UploadStatus
 from app.errors import InvalidInputError, LimitReachedError, NotFoundError
+from app.integrations import pdf_extraction
 from app.integrations.llm_extraction import LLMExtractionError
 from app.integrations.pdf_extraction import PDFExtractionError
 from app.models import ExtractedEvent, Upload, User, utc_now
-from app.services.upload_service import UploadLimits, UploadService
+from app.services.upload_service import ABANDONED_MESSAGE, UploadLimits, UploadService
 
 PDF_BYTES = (Path(__file__).parent / "fixtures" / "cpsc213_schedule_current.pdf").read_bytes()
 
@@ -29,13 +30,38 @@ def claude_fails(message):
     return patch("app.integrations.llm_extraction.extract_events", side_effect=LLMExtractionError(message))
 
 
+def upload_and_extract(service: UploadService, filename: str = "cpsc213.pdf") -> Upload:
+    # Both steps, one after the other: what the route and its background job do together.
+    upload = service.start_upload(filename, PDF_BYTES)
+    service.extract_events(upload, PDF_BYTES)
+    return upload
+
+
 def count(db, model) -> int:
     return db.scalar(select(func.count()).select_from(model))
 
 
-def test_process_pdf_saves_the_upload_and_its_events(db, user):
+def add_past_upload(db, user, hours_ago: float, status=UploadStatus.EXTRACTED) -> Upload:
+    upload = Upload(user=user, filename="old.pdf", raw_text="...", status=status,
+                    created_at=utc_now() - timedelta(hours=hours_ago))
+    db.add(upload)
+    db.commit()
+    return upload
+
+
+
+def test_starting_an_upload_saves_it_as_processing_without_calling_claude(db, user):
     with claude_returns(DRAFTS) as mock_extract:
-        upload = UploadService(db, user).process_pdf("cpsc213.pdf", PDF_BYTES)
+        upload = UploadService(db, user).start_upload("cpsc213.pdf", PDF_BYTES)
+
+    mock_extract.assert_not_called()  # that's the background job's work
+    assert db.get(Upload, upload.id).status is UploadStatus.PROCESSING
+    assert "Sep 14-18" in upload.raw_text
+
+
+def test_extracting_saves_the_events_and_marks_it_extracted(db, user):
+    with claude_returns(DRAFTS) as mock_extract:
+        upload = upload_and_extract(UploadService(db, user))
 
     assert upload.status is UploadStatus.EXTRACTED
     assert [event.title for event in upload.events] == [draft.title for draft in DRAFTS]
@@ -53,29 +79,40 @@ def test_process_pdf_saves_the_upload_and_its_events(db, user):
 def test_get_events_returns_them_sorted_by_date(db, user):
     service = UploadService(db, user)
     with claude_returns(DRAFTS):
-        upload = service.process_pdf("cpsc213.pdf", PDF_BYTES)
+        upload = upload_and_extract(service)
 
     dates = [event.start_date for event in service.get_events(upload.id)]
     assert dates == sorted(dates)
 
 
 def test_invalid_pdf_raises_and_saves_nothing(db, user):
-    with claude_returns(DRAFTS) as mock_extract, pytest.raises(PDFExtractionError):
-        UploadService(db, user).process_pdf("notes.pdf", b"not a pdf")
+    with pytest.raises(PDFExtractionError):
+        UploadService(db, user).start_upload("notes.pdf", b"not a pdf")
 
     assert count(db, Upload) == 0
-    mock_extract.assert_not_called()  # never pay for a Claude call on a broken file
 
 
 def test_failed_extraction_is_saved_as_failed_with_no_events(db, user):
-    with claude_fails("reply was cut off"), pytest.raises(LLMExtractionError):
-        UploadService(db, user).process_pdf("cpsc213.pdf", PDF_BYTES)
+    with claude_fails("reply was cut off"):
+        upload_and_extract(UploadService(db, user))  # doesn't raise: the failure is the upload's status
 
     upload = db.scalars(select(Upload)).one()
     assert upload.status is UploadStatus.FAILED
     assert upload.error_message == "reply was cut off"
     assert "Sep 14-18" in upload.raw_text  # kept for debugging the prompt later
     assert count(db, ExtractedEvent) == 0
+
+
+def test_an_unexpected_error_still_ends_processing(db, user):
+    # Otherwise the upload would stay 'processing', and the page would wait for it forever.
+    service = UploadService(db, user)
+    upload = service.start_upload("cpsc213.pdf", PDF_BYTES)
+
+    crash = patch("app.integrations.llm_extraction.extract_events", side_effect=RuntimeError("bug"))
+    with crash, pytest.raises(RuntimeError):
+        service.extract_events(upload, PDF_BYTES)
+
+    assert db.get(Upload, upload.id).status is UploadStatus.FAILED
 
 
 def test_missing_upload_raises_not_found(db, user):
@@ -88,7 +125,7 @@ def test_another_users_upload_looks_like_it_does_not_exist(db, user):
     db.add(other_user)
     db.commit()
     with claude_returns(DRAFTS):
-        their_upload = UploadService(db, other_user).process_pdf("theirs.pdf", PDF_BYTES)
+        their_upload = upload_and_extract(UploadService(db, other_user), "theirs.pdf")
 
     with pytest.raises(NotFoundError):
         UploadService(db, user).get_upload(their_upload.id)
@@ -96,32 +133,43 @@ def test_another_users_upload_looks_like_it_does_not_exist(db, user):
         UploadService(db, user).get_events(their_upload.id)
 
 
+def test_an_upload_still_processing_long_after_it_started_is_given_up_on(db, user):
+    # e.g. the server restarted partway through, so no job is coming to finish it.
+    lost = add_past_upload(db, user, hours_ago=1, status=UploadStatus.PROCESSING)
+    running = add_past_upload(db, user, hours_ago=1 / 60, status=UploadStatus.PROCESSING)
+
+    service = UploadService(db, user)
+    assert service.get_upload(lost.id).status is UploadStatus.FAILED
+    assert lost.error_message == ABANDONED_MESSAGE
+    assert service.get_upload(running.id).status is UploadStatus.PROCESSING  # a minute in: still working
+
+
 # --- Limits ------------------------------------------------------------------------------
-
-def add_past_upload(db, user, hours_ago: float, status=UploadStatus.EXTRACTED) -> Upload:
-    upload = Upload(user=user, filename="old.pdf", raw_text="...", status=status,
-                    created_at=utc_now() - timedelta(hours=hours_ago))
-    db.add(upload)
-    db.commit()
-    return upload
-
 
 def test_uploads_are_allowed_up_to_the_daily_limit(db, user):
     add_past_upload(db, user, hours_ago=1)
-    with claude_returns(DRAFTS):
-        UploadService(db, user, UploadLimits(per_day=2)).process_pdf("cpsc213.pdf", PDF_BYTES)  # the 2nd: fine
+    UploadService(db, user, UploadLimits(per_day=2)).start_upload("cpsc213.pdf", PDF_BYTES)  # the 2nd: fine
     assert count(db, Upload) == 2
 
 
-def test_one_more_is_refused_without_calling_claude_or_saving(db, user):
+def test_one_more_is_refused_without_saving(db, user):
     add_past_upload(db, user, hours_ago=1)
     add_past_upload(db, user, hours_ago=2)
 
-    with claude_returns(DRAFTS) as mock_extract, pytest.raises(LimitReachedError, match="limit of 2 uploads per day"):
-        UploadService(db, user, UploadLimits(per_day=2)).process_pdf("cpsc213.pdf", PDF_BYTES)
+    with pytest.raises(LimitReachedError, match="limit of 2 uploads per day"):
+        UploadService(db, user, UploadLimits(per_day=2)).start_upload("cpsc213.pdf", PDF_BYTES)
 
-    mock_extract.assert_not_called()
     assert count(db, Upload) == 2
+
+
+def test_an_upload_counts_as_soon_as_it_starts(db, user):
+    # The bug this guards against: uploads used to be saved only once Claude answered, so
+    # uploads sent during that minute all saw the same count and all got through.
+    service = UploadService(db, user, UploadLimits(per_day=1))
+    service.start_upload("cpsc213.pdf", PDF_BYTES)  # still processing
+
+    with pytest.raises(LimitReachedError):
+        service.start_upload("cpsc213.pdf", PDF_BYTES)
 
 
 def test_the_refusal_says_when_a_slot_frees_up(db, user):
@@ -130,29 +178,27 @@ def test_the_refusal_says_when_a_slot_frees_up(db, user):
     add_past_upload(db, user, hours_ago=1)
 
     with pytest.raises(LimitReachedError, match="in about 4 hours") as refused:
-        UploadService(db, user, UploadLimits(per_day=2)).process_pdf("cpsc213.pdf", PDF_BYTES)
+        UploadService(db, user, UploadLimits(per_day=2)).start_upload("cpsc213.pdf", PDF_BYTES)
     assert timedelta(hours=3, minutes=59) < refused.value.retry_after <= timedelta(hours=4)
 
 
 def test_uploads_older_than_a_day_stop_counting(db, user):
     add_past_upload(db, user, hours_ago=25)
-    with claude_returns(DRAFTS):
-        UploadService(db, user, UploadLimits(per_day=1)).process_pdf("cpsc213.pdf", PDF_BYTES)
+    UploadService(db, user, UploadLimits(per_day=1)).start_upload("cpsc213.pdf", PDF_BYTES)
 
 
 def test_failed_extractions_still_count(db, user):
     # The Claude call was made (and paid for) even though it failed.
     add_past_upload(db, user, hours_ago=1, status=UploadStatus.FAILED)
     with pytest.raises(LimitReachedError):
-        UploadService(db, user, UploadLimits(per_day=1)).process_pdf("cpsc213.pdf", PDF_BYTES)
+        UploadService(db, user, UploadLimits(per_day=1)).start_upload("cpsc213.pdf", PDF_BYTES)
 
 
 def test_unreadable_files_do_not_use_up_the_allowance(db, user):
     service = UploadService(db, user, UploadLimits(per_day=1))
     with pytest.raises(PDFExtractionError):
-        service.process_pdf("notes.pdf", b"not a pdf")
-    with claude_returns(DRAFTS):
-        service.process_pdf("cpsc213.pdf", PDF_BYTES)  # still allowed
+        service.start_upload("notes.pdf", b"not a pdf")
+    service.start_upload("cpsc213.pdf", PDF_BYTES)  # still allowed
 
 
 def test_each_user_has_their_own_allowance(db, user):
@@ -161,19 +207,16 @@ def test_each_user_has_their_own_allowance(db, user):
     db.commit()
     add_past_upload(db, someone_else, hours_ago=1)
 
-    with claude_returns(DRAFTS):
-        UploadService(db, user, UploadLimits(per_day=1)).process_pdf("cpsc213.pdf", PDF_BYTES)
+    UploadService(db, user, UploadLimits(per_day=1)).start_upload("cpsc213.pdf", PDF_BYTES)
 
 
-def test_a_pdf_with_too_much_text_is_refused_before_claude(db, user):
-    with claude_returns(DRAFTS) as mock_extract, pytest.raises(InvalidInputError, match="too much text"):
-        UploadService(db, user, UploadLimits(max_text_chars=100)).process_pdf("cpsc213.pdf", PDF_BYTES)
+def test_a_pdf_with_too_much_text_is_refused_before_saving(db, user):
+    with pytest.raises(InvalidInputError, match="too much text"):
+        UploadService(db, user, UploadLimits(max_text_chars=100)).start_upload("cpsc213.pdf", PDF_BYTES)
 
-    mock_extract.assert_not_called()
     assert count(db, Upload) == 0
 
 
 def test_the_real_schedule_fits_comfortably_under_the_default_text_limit():
     # Guards the default: if this fails, the limit would refuse real syllabi.
-    from app.integrations import pdf_extraction
     assert len(pdf_extraction.extract_text(PDF_BYTES)) * 10 < UploadLimits().max_text_chars

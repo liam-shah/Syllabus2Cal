@@ -88,6 +88,10 @@ export const api = {
     return request<Upload>('/uploads', { method: 'POST', body: form })
   },
 
+  getUpload(uploadId: number, signal?: AbortSignal): Promise<Upload> {
+    return request<Upload>(`/uploads/${uploadId}`, { signal })
+  },
+
   getEvents(uploadId: number, signal?: AbortSignal): Promise<ExtractedEvent[]> {
     const query = new URLSearchParams({ upload_id: String(uploadId) })
     return request<ExtractedEvent[]>(`/events/preview?${query}`, { signal })

@@ -43,6 +43,13 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     engine = create_db_engine(database_url)  # same foreign-key settings as the app
     with engine.connect() as connection:
+        is_sqlite = connection.dialect.name == "sqlite"
+        if is_sqlite:
+            # Rebuilding a table drops the old copy, which other tables' foreign keys still point
+            # at, so SQLite's own instructions say to switch the checks off while rebuilding.
+            # (It can only be switched outside a transaction, hence the commit.)
+            connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+            connection.commit()
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -52,6 +59,11 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+            if is_sqlite:
+                # ...and then to check that every foreign key still points at a real row.
+                broken = connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+                if broken:
+                    raise RuntimeError(f"Migration left broken foreign keys: {broken}")
     engine.dispose()
 
 

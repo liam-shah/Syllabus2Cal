@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app import models  # noqa: E402, F401 - importing registers the tables on Base
 from app.db import Base, create_db_engine, get_db  # noqa: E402
-from app.dependencies import get_current_user  # noqa: E402
+from app.dependencies import get_current_user, get_session_factory  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import User  # noqa: E402
 
@@ -52,6 +52,8 @@ def signed_out_client(db: Session) -> TestClient:
         yield db
 
     app.dependency_overrides[get_db] = use_test_db
+    # Background jobs open their own sessions; point those at the test database too.
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=db.get_bind())
     # Deliberately not `with TestClient(app)`: that would run the app's startup code,
     # which checks the real app.db. The test database already has its tables.
     yield TestClient(app)

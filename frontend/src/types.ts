@@ -8,7 +8,7 @@
 /** A date as the API sends it: "YYYY-MM-DD", with no time or timezone. */
 export type IsoDate = string
 
-export type UploadStatus = 'extracted' | 'failed'
+export type UploadStatus = 'processing' | 'extracted' | 'failed'
 
 export type EventStatus = 'pending_review' | 'edited' | 'synced' | 'sync_failed'
 

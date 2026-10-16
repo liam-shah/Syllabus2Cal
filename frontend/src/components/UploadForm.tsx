@@ -4,7 +4,7 @@ import { useUploadPdf } from '../hooks/useUploadPdf'
 import type { Upload } from '../types'
 
 interface UploadFormProps {
-  /** Called once the backend has extracted the events, so the parent can show them. */
+  /** Called once the backend has accepted the PDF, so the parent can follow its progress. */
   onUploaded: (upload: Upload) => void
 }
 
@@ -46,17 +46,12 @@ export default function UploadForm({ onUploaded }: UploadFormProps) {
           disabled={file === null || upload.isPending}
           className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
         >
-          {upload.isPending ? 'Extracting…' : 'Extract events'}
+          {upload.isPending ? 'Uploading…' : 'Extract events'}
         </button>
       </form>
 
       {/* aria-live: screen readers announce these messages when they appear. */}
       <div aria-live="polite" className="mt-3 text-sm">
-        {upload.isPending && (
-          <p className="text-slate-600">
-            Reading your PDF and extracting events with Claude. This usually takes about a minute.
-          </p>
-        )}
         {upload.isError && (
           <p role="alert" className="text-red-700">
             {upload.error.message}

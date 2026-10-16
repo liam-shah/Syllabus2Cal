@@ -27,7 +27,7 @@ flowchart TD
 | Layer | Job | Example |
 |---|---|---|
 | `routers/` | Read the HTTP request, call a service, return a response | `POST /uploads` reads the file and enforces the 10 MB limit |
-| `services/` | The app's own rules and workflows | `UploadService.process_pdf()` - extract, save, handle failures |
+| `services/` | The app's own rules and workflows | `UploadService.start_upload()` - check limits, save, hand off to Claude |
 | `integrations/` | Wrap someone else's system | `llm_extraction.py` talks to Claude, `google_calendar.py` to Google |
 | `models.py` | How data is stored | `User`, `LoginSession`, `Upload`, `ExtractedEvent` tables |
 | `domain.py`, `errors.py` | Types every layer shares | `EventDraft`, `EventStatus`, the exception hierarchy |
@@ -70,7 +70,8 @@ classDiagram
     class UploadService {
         -Session db
         -User user
-        +process_pdf(filename, pdf_bytes) Upload
+        +start_upload(filename, pdf_bytes) Upload
+        +extract_events(upload, pdf_bytes)
         +get_upload(upload_id) Upload
         +get_events(upload_id) list~ExtractedEvent~
     }
@@ -143,6 +144,7 @@ classDiagram
     }
     class UploadStatus {
         <<enumeration>>
+        PROCESSING
         EXTRACTED
         FAILED
     }
@@ -201,26 +203,54 @@ also refuses fields it doesn't know about (`extra="forbid"`), so a client can't 
 
 ## How an upload works
 
+Claude takes about a minute, which is too long to keep a request open (Firebase Hosting gives
+up on a request after 60 seconds). So an upload happens in two steps. The request only checks
+the PDF and saves it as `processing`, and answers `202 Accepted` straight away. Claude runs in
+a **background task** after the response has been sent, and the frontend asks for the upload
+every two seconds until its status changes.
+
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant R as upload router
     participant S as UploadService
-    participant P as pdf_extraction
-    participant C as llm_extraction (Claude)
+    participant C as Claude (background task)
     participant D as Database
     B->>R: POST /uploads (PDF file)
     R->>R: read at most 10 MB (else 413)
-    R->>S: process_pdf(filename, bytes)
-    S->>P: extract_text + extract_tables
-    Note over S,P: not a PDF -> PDFExtractionError -> 400
-    S->>C: extract_events(text, tables)
-    C-->>S: list of EventDraft
-    Note over S,C: Claude fails -> upload saved as FAILED -> 502
-    S->>D: save upload + all events (one transaction)
-    S-->>R: Upload
-    R-->>B: 201 Created
+    R->>S: start_upload(filename, bytes)
+    S->>S: read the text, check the limits (400 / 429)
+    S->>D: save upload as PROCESSING (committed now)
+    R-->>B: 202 Accepted {status: "processing"}
+    R->>C: after the response: extract_events(upload, bytes)
+    C->>D: save all events + EXTRACTED (one transaction), or FAILED
+    loop every 2 seconds while processing
+        B->>R: GET /uploads/{id}
+        R-->>B: {status: ...}
+    end
+    B->>R: GET /events/preview (once it's extracted)
 ```
+
+Details that matter:
+
+- **The background task gets its own database session.** The request's session is closed by
+  the time the task runs. The router gets a session *factory* from a dependency
+  (`get_session_factory`), so tests can point the task at the test database.
+- **`UploadService` doesn't know it's running in the background.** `extract_events` is an
+  ordinary method that tests call directly. Only the small `extract_in_background` function
+  deals with sessions. Swapping `BackgroundTasks` for a real job queue later only changes that
+  function and the line in the router that schedules it.
+- **A failure always ends `processing`.** If Claude fails, the upload is marked `FAILED` with the
+  reason. If anything *unexpected* goes wrong, it's still marked `FAILED` before the error is
+  re-raised, otherwise the page would wait forever.
+- **Lost jobs are given up on.** If the server restarts mid-extraction, nothing is coming to
+  finish the upload. So when someone asks for an upload that's been `processing` for over 15
+  minutes (much longer than Claude ever takes), `get_upload` marks it failed. The SQL is
+  `UPDATE uploads SET status = 'failed' ... WHERE id = ? AND status = 'processing'`. The
+  `AND status = 'processing'` part makes it safe if the job finishes at that exact moment,
+  because the database only changes the row if it's *still* processing. (This is called a
+  compare-and-set.) I check when someone looks instead of running a timer, so it works however
+  the job was lost, and there's no scheduler to run.
 
 ## How a sync works
 
@@ -318,9 +348,9 @@ frontend/src/
   format.ts, url.ts  small pure helpers (date formatting, state kept in the URL)
   eventForm.ts       the edit form's logic: event -> form values -> only the changed fields
   api/               client.ts (HTTP + ApiError), queryClient.ts (retry rules)
-  hooks/             useAuthStatus, useEvents, useUploadPdf, useEventMutations, queryKeys
-  components/        AuthStatusBanner, SignInNotice, UploadForm, EventReviewTable, EventRow,
-                     EventEditForm
+  hooks/             useAuthStatus, useUpload, useEvents, useUploadPdf, useEventMutations, queryKeys
+  components/        AuthStatusBanner, SignInNotice, UploadForm, UploadProgress, EventReviewTable,
+                     EventRow, EventEditForm
 ```
 
 A few decisions I'd point out:
@@ -337,7 +367,11 @@ A few decisions I'd point out:
   has handled the other two. Statuses are string unions (`'pending_review' | 'synced' | ...`)
   that mirror the backend's enums.
 - **Some state lives in the URL.** The upload being reviewed is kept as `?upload=3`, so
-  refreshing the page doesn't lose it (and doesn't mean paying for another extraction).
+  refreshing the page doesn't lose it (and doesn't mean paying for another extraction). That
+  includes an upload that's still being extracted: the page picks up polling where it left off.
+- **Polling stops by itself.** `useUpload` sets TanStack's `refetchInterval` to a function that
+  returns 2 seconds while the status is `processing` and `false` after that, so a finished
+  upload is never fetched again.
 - **Dates are parsed carefully.** `new Date("2026-09-15")` means midnight *UTC*, which is still
   Sep 14 in Vancouver, so every date would show a day early. `formatDate` builds the date from
   its parts instead, and the tests run in Vancouver time so this bug can't sneak back in.
@@ -510,8 +544,8 @@ anyone can sign in, someone could run up my bill. `UploadService` checks two lim
 calling Claude, so a refused upload costs nothing:
 
 - **10 uploads per user in any rolling 24 hours** (`UPLOADS_PER_DAY`). This is counted straight
-  from the `uploads` table, so there's no separate counter to keep in sync. Failed extractions
-  count, because the Claude call was still paid for. Unreadable files don't, because they're
+  from the `uploads` table, so there's no separate counter to keep in sync. Failed and
+  still-processing extractions count, because the Claude call was (or is being) paid for. Unreadable files don't, because they're
   rejected before Claude and never saved. The 429 response includes the standard `Retry-After`
   header, and the message says roughly when a slot frees up.
 - **50,000 characters of PDF text** (about 12k tokens), so a 10 MB PDF can't become one huge
@@ -543,6 +577,8 @@ them out.
   wrong browser, all through the real routes and middleware.
 - Migrations are tested against real throwaway SQLite files: they build exactly what
   `models.py` describes, upgrading keeps existing data, and every migration can be undone.
+  Rebuilding a table on SQLite means switching foreign-key checks off for the rebuild, and
+  `migrations/env.py` runs `PRAGMA foreign_key_check` afterwards to make sure nothing broke.
 - Run them from `backend/` with `pytest`.
 - The frontend uses Vitest and React Testing Library. Tests render real components and only
   fake the network (`fetch`), so they check what a user would see rather than internal details.
@@ -550,9 +586,17 @@ them out.
 
 ## Known limitations and future work
 
-- **Limits under concurrency.** The upload limit is check-then-act: two uploads sent at exactly the
-  same moment could both pass the check and go one over the limit. That's fine as a cost cap.
-  Making it exact would need a row lock, or a counter updated atomically in the database.
+- **Limits under concurrency.** The upload limit is check-then-act. My first version saved the
+  upload only after Claude answered, so for that whole minute other uploads couldn't see it: a
+  script sending 30 at once got all 30 through. Now the upload is committed straight after the
+  check, so the gap is a few milliseconds and only uploads sent at exactly the same moment could
+  go over. That's fine as a cost cap. Making it exact would need a row lock, or a counter updated
+  atomically in the database.
+- **Background tasks live inside the web server.** FastAPI's `BackgroundTasks` run in the same
+  process as the server, so a restart loses jobs that are running (they're failed after 15
+  minutes, see above). Cloud Run also slows the CPU right down once a response is sent. Before
+  deploying, I'd move extraction to a real queue like Cloud Tasks, which calls the backend with
+  a fresh request for each job.
 
 - **Same-site hosting.** The session cookie is `SameSite=Lax`, so the frontend and backend have
   to be the same *site* when deployed: either one domain (Firebase Hosting forwarding `/api` to
@@ -565,9 +609,9 @@ them out.
   another calendar (e.g. Outlook) or AI provider, I'd define interfaces like `CalendarProvider`
   and inject the implementation, which would also make the tests less dependent on file paths.
   I left this out for now because I only need one of each.
-- **Slow requests.** Extraction takes around a minute and syncing about 30 seconds, and the
-  browser waits for both. A background job with a progress indicator would be a better
-  experience. Google's batch requests could also send many events in one HTTP call.
+- **Slow sync.** Syncing takes about 30 seconds and the browser waits for it. It could move to
+  a background task the same way extraction did, and Google's batch requests could send many
+  events in one HTTP call.
 - **One-way sync.** Events are only ever created in Google Calendar. Editing or deleting an event
   afterwards has to be done in Google Calendar; updating them from the app would use Google's
   update and delete calls with the saved `google_event_id`.

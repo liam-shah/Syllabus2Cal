@@ -93,7 +93,8 @@ class Upload(Base):
     raw_text: Mapped[str] = mapped_column(Text)
     status: Mapped[UploadStatus] = mapped_column(status_column_type(UploadStatus, "upload_status"))
     error_message: Mapped[str | None]
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Set by Python (not the database's clock), because the daily limit compares it with utc_now().
+    created_at: Mapped[datetime] = mapped_column(default=utc_now, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="uploads")
     events: Mapped[list["ExtractedEvent"]] = relationship(

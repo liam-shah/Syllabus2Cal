@@ -52,9 +52,27 @@ def test_upgrading_an_existing_database_keeps_its_data(database):
 
     command.upgrade(config, "head")
 
-    with engine.connect() as connection:
+    with engine.begin() as connection:
         rows = connection.execute(text("SELECT title, sync_key FROM extracted_events")).all()
+        # uploads was rebuilt to allow the new status: its rows (and the events' links to them) survive.
+        connection.execute(text("UPDATE uploads SET status = 'processing' WHERE id = 1"))
     assert rows == [("Lab L1", None)]  # data kept; the new column starts empty
+
+
+def test_undoing_the_processing_status_fails_uploads_that_were_mid_extraction(database):
+    # The older schema doesn't allow 'processing', so the downgrade has to change those rows first.
+    config, engine = database
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users (id) VALUES (1)"))
+        connection.execute(text(
+            "INSERT INTO uploads (user_id, filename, raw_text, status) VALUES (1, 'a.pdf', '...', 'processing')"
+        ))
+
+    command.downgrade(config, "e6f01ca19a79")
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT status FROM uploads")).scalar_one() == "failed"
 
 
 def test_every_migration_can_be_undone(database):

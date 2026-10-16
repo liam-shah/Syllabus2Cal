@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 
 import AuthStatusBanner from './components/AuthStatusBanner'
-import EventReviewTable from './components/EventReviewTable'
 import SignInNotice from './components/SignInNotice'
 import SignInScreen from './components/SignInScreen'
 import UploadForm from './components/UploadForm'
+import UploadProgress from './components/UploadProgress'
 import { useAuthStatus } from './hooks/useAuthStatus'
 import { readSignInResult, readUploadId, withUploadId, withoutSignInParams } from './url'
 
@@ -45,7 +45,7 @@ export default function App() {
         ) : (
           <>
             <UploadForm onUploaded={(upload) => setUploadId(upload.id)} />
-            {uploadId !== null && <EventReviewTable uploadId={uploadId} />}
+            {uploadId !== null && <UploadProgress uploadId={uploadId} />}
           </>
         )}
       </main>

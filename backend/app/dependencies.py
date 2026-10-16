@@ -5,11 +5,11 @@ receives the same session.
 """
 
 from fastapi import Depends, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app import session_cookie
 from app.config import settings
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.errors import NotSignedInError
 from app.integrations.google_calendar import GoogleCalendarClient
 from app.models import User
@@ -17,6 +17,12 @@ from app.services.auth_service import AuthService
 from app.services.event_service import EventService
 from app.services.sync_service import CalendarFactory, SyncService
 from app.services.upload_service import UploadLimits, UploadService
+
+
+def get_session_factory() -> sessionmaker:
+    # Background jobs outlive the request, so they open sessions of their own instead of
+    # using get_db's. A dependency, so tests can point jobs at the test database.
+    return SessionLocal
 
 
 def get_auth_service(db: Session = Depends(get_db)) -> AuthService:

@@ -21,7 +21,7 @@ describe('UploadForm', () => {
     expect(button).toBeEnabled()
   })
 
-  it('shows progress while extracting, then hands the upload to the parent', async () => {
+  it('shows progress while uploading, then hands the upload to the parent', async () => {
     const user = userEvent.setup()
     let respond!: (response: Response) => void
     const fetchMock = mockFetch(() => new Promise<Response>((resolve) => { respond = resolve }))
@@ -31,13 +31,13 @@ describe('UploadForm', () => {
     await user.upload(screen.getByLabelText('PDF file'), pdfFile())
     await user.click(screen.getByRole('button', { name: 'Extract events' }))
 
-    // While the (slow) request is running: a progress message, and no way to submit twice.
-    expect(await screen.findByText(/takes about a minute/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Extracting…' })).toBeDisabled()
+    // While the request is running there's no way to submit twice.
+    expect(await screen.findByRole('button', { name: 'Uploading…' })).toBeDisabled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    respond(jsonResponse(makeUpload(), 201))
-    await waitFor(() => expect(onUploaded).toHaveBeenCalledWith(makeUpload()))
+    const accepted = makeUpload({ status: 'processing' })
+    respond(jsonResponse(accepted, 202))
+    await waitFor(() => expect(onUploaded).toHaveBeenCalledWith(accepted))
   })
 
   it("shows the backend's error message when the upload fails", async () => {

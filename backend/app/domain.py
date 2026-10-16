@@ -21,6 +21,7 @@ TimeOfDay = Annotated[str, AfterValidator(check_time_of_day)]
 
 
 class UploadStatus(StrEnum):
+    PROCESSING = "processing"  # saved, and Claude is still extracting its events
     EXTRACTED = "extracted"
     FAILED = "failed"
 
