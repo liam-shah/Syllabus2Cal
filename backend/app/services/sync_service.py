@@ -1,7 +1,9 @@
 """Syncing reviewed events into the user's Google Calendar."""
 
+import uuid
 from collections.abc import Callable
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError
@@ -61,8 +63,7 @@ class SyncService:
     def _sync_one(self, calendar: GoogleCalendarClient, event: ExtractedEvent) -> None:
         # Save the key *before* contacting Google: if we crash after Google creates the event
         # but before we record it, the retry sends the same key and can't create a duplicate.
-        sync_key = event.ensure_sync_key()
-        self._db.commit()
+        sync_key = self._claim_sync_key(event)
 
         try:
             event.mark_synced(calendar.insert_event(event.to_draft(), sync_key))
@@ -71,3 +72,20 @@ class SyncService:
         except GoogleCalendarError as e:
             event.mark_sync_failed(str(e))  # one bad event shouldn't stop the others
         self._db.commit()
+
+    def _claim_sync_key(self, event: ExtractedEvent) -> str:
+        """The ID to give this event in Google Calendar - chosen once, then reused on every retry.
+
+        Set in the database only if there's no key yet (compare-and-set): two syncs running at
+        once (two tabs, a double click) both read "no key", but only one UPDATE matches, so both
+        send the *same* ID and Google refuses the second insert as a duplicate.
+        """
+        self._db.execute(
+            update(ExtractedEvent)
+            .where(ExtractedEvent.id == event.id, ExtractedEvent.sync_key.is_(None))
+            .values(sync_key=uuid.uuid4().hex),  # 32 chars of 0-9a-f: a valid Google event ID
+            execution_options={"synchronize_session": False},
+        )
+        self._db.commit()
+        self._db.refresh(event)  # whichever key the database kept: ours, or the other sync's
+        return event.sync_key

@@ -4,6 +4,7 @@ import re
 from datetime import date
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from app.domain import EventDraft, EventStatus, UploadStatus
 from app.errors import ConflictError, NotFoundError
@@ -117,6 +118,29 @@ def test_a_retry_after_a_crash_reuses_the_same_event_id(db, connected_user):
     make_service(db, connected_user, retry).sync_upload(upload.id)
 
     assert retry.inserted == [("Lecture", key_saved_before_the_crash)]
+
+
+def test_two_syncs_at_once_send_an_event_with_the_same_id(db, connected_user):
+    # Two tabs (or a double click) sync one upload: both read the event before either saves a
+    # key. If each then chose its own key, Google would create the event twice.
+    upload = add_upload(db, connected_user, ("Lecture", True, PENDING))
+    event_id = upload.events[0].id
+    calendar = FakeCalendar()
+    other_tab = sessionmaker(bind=db.get_bind())()
+
+    def open_calendar_while_the_other_tab_claims_the_key(_credentials_json):
+        # Runs after this sync has read its events, before it saves any key.
+        other_tab.get(ExtractedEvent, event_id).sync_key = "keyfromtheothertab"
+        other_tab.commit()
+        return calendar
+
+    service = SyncService(db, connected_user, UploadService(db, connected_user),
+                          open_calendar=open_calendar_while_the_other_tab_claims_the_key)
+    service.sync_upload(upload.id)
+    other_tab.close()
+
+    # The same ID both tabs use, so Google refuses the second insert as a duplicate.
+    assert calendar.inserted == [("Lecture", "keyfromtheothertab")]
 
 
 def test_refreshed_credentials_are_saved(db, connected_user):

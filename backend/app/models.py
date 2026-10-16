@@ -1,6 +1,5 @@
 """SQLAlchemy models: how users, uploads, and events are stored in the database."""
 
-import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 
@@ -174,12 +173,6 @@ class ExtractedEvent(Base):
     def is_waiting_to_sync(self) -> bool:
         """Ticked for the calendar and not there yet (including earlier failed attempts)."""
         return self.included and self.status is not EventStatus.SYNCED
-
-    def ensure_sync_key(self) -> str:
-        """The ID to give this event in Google Calendar - chosen once, then reused on every retry."""
-        if self.sync_key is None:
-            self.sync_key = uuid.uuid4().hex  # 32 chars of 0-9a-f: a valid Google event ID
-        return self.sync_key
 
     def mark_synced(self, google_event_id: str) -> None:
         self.status = EventStatus.SYNCED

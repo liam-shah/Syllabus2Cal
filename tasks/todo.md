@@ -94,13 +94,15 @@ event twice. Replace it with an atomic database claim,
 the database actually holds.
 
 **Acceptance criteria:**
-- [ ] If another session saves a key after this one loaded the event, sync uses the stored
+- [x] If another session saves a key after this one loaded the event, sync uses the stored
   key instead of creating a new one (test with two sessions on the same database)
-- [ ] Retries and existing sync behaviour are unchanged (current `test_sync_service.py` passes)
+- [x] Retries and existing sync behaviour are unchanged (current `test_sync_service.py` passes)
 
 **Verification:**
-- [ ] Tests pass on SQLite and on Postgres: `python -m pytest -q tests/test_sync_service.py tests/test_models.py`
+- [x] Tests pass on SQLite and on Postgres: `python -m pytest -q tests/test_sync_service.py tests/test_models.py`
+  (155 pass on each)
 - [ ] Manual check: two tabs press Sync together → each event appears once in Google Calendar
+  *(not done yet: needs your Google account; covered again in Checkpoint 3)*
 
 **Dependencies:** Task 1, so the compare-and-set is proven on Postgres
 
