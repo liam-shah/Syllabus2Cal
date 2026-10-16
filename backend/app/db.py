@@ -14,6 +14,10 @@ def create_db_engine(url: str, **engine_options) -> Engine:
 
     Tests use this too, so their in-memory database follows the same rules as app.db.
     """
+    if url.startswith("postgresql"):
+        # Neon suspends an idle database and drops its connections, so check a pooled
+        # connection still works before using it (one cheap round trip) instead of erroring.
+        engine_options.setdefault("pool_pre_ping", True)
     engine = create_engine(url, **engine_options)
 
     if engine.dialect.name == "sqlite":

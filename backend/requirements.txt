@@ -6,6 +6,7 @@ pydantic
 pydantic-settings
 sqlalchemy
 alembic
+psycopg[binary]
 pdfplumber
 anthropic
 google-auth
