@@ -21,3 +21,5 @@ private/
 
 # graphify output (generated, can be rebuilt any time)
 graphify-out/
+# Firebase CLI deploy cache
+.firebase/
