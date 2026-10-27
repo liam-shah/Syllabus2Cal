@@ -70,6 +70,25 @@ app.add_middleware(
     https_only=settings.cookies_need_https,
 )
 
+class ApiPrefix:
+    """Answer every route at /api/... as well as at its plain path.
+
+    Firebase Hosting forwards /api/** to Cloud Run with the /api still on the path, while Cloud
+    Tasks calls run.app directly without it (and so does local development). Setting root_path
+    is the ASGI way to say "mounted under /api": Starlette matches routes on the path after it.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and (scope["path"] + "/").startswith("/api/"):
+            scope = {**scope, "root_path": scope.get("root_path", "") + "/api"}
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(ApiPrefix)
+
 # The frontend runs on a different origin (port 5173 locally), so browsers only let its
 # JavaScript read our responses if we explicitly allow it. Allow exactly what's used.
 # allow_credentials: lets the frontend's requests carry the session cookie. Only safe because

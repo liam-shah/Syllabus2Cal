@@ -69,3 +69,19 @@ def test_errors_reach_the_client_as_json_detail(client):
     assert response.status_code == 404
     assert response.json() == {"detail": "Upload not found"}
 
+
+
+# --- Serving under /api ----------------------------------------------------------------------
+# Firebase Hosting forwards /api/** to Cloud Run with the /api still on the path; Cloud Tasks
+# calls run.app directly without it, and so does local development.
+
+def test_every_route_answers_with_or_without_the_api_prefix(signed_out_client):
+    for path in ("/auth/status", "/api/auth/status"):
+        response = signed_out_client.get(path)
+        assert response.status_code == 200, path
+        assert response.json()["signed_in"] is False
+
+
+def test_the_prefix_only_counts_as_a_whole_path_segment(signed_out_client):
+    assert signed_out_client.get("/apiauth/status").status_code == 404
+    assert signed_out_client.get("/api/api/auth/status").status_code == 404

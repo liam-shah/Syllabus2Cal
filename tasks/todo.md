@@ -301,18 +301,23 @@ a "please try again" message. This removes the `shortcut:` comment in `extract_i
 - Add `frontend/.env.production` with `VITE_API_URL=/api`.
 
 **Acceptance criteria:**
-- [ ] `docker build` succeeds. The container serves `GET /api/auth/status` (the Firebase
+- [x] `docker build` succeeds. The container serves `GET /api/auth/status` (the Firebase
   path), and `POST /internal/extractions/1` with no prefix gets the route's 401 (the Cloud
   Tasks path), not a 404.
-- [ ] The production frontend build calls the same-origin `/api/...`, and sign-in links point to
+- [x] The production frontend build calls the same-origin `/api/...`, and sign-in links point to
   `/api/auth/google/login`
-- [ ] ADR `docs/adr/0004-same-origin-api.md` (the cookie, the Firebase rewrite, why CORS no
+- [x] ADR `docs/adr/0004-same-origin-api.md` (the cookie, the Firebase rewrite, why CORS no
   longer matters in production)
 
 **Verification:**
-- [ ] Build succeeds: `docker build -t s2c backend` and `npm run build`
-- [ ] Manual check: run the container locally with a Postgres URL;
+- [x] Build succeeds: `docker build -t s2c backend` and `npm run build`
+- [x] Manual check: run the container locally with a Postgres URL;
   `curl localhost:8080/api/auth/status` returns `{"signed_in": false}`
+
+  Verified: 187 tests pass on SQLite and Postgres. The container (non-root, no secrets, tests or
+  pytest; pinned deps) answered /api/auth/status 200, /internal/extractions/1 401, /apiauth 404.
+  `--root-path` didn't work (uvicorn expects the proxy to strip /api); the `ApiPrefix` middleware
+  in main.py does it instead (ADR 0004).
 
 **Dependencies:** Tasks 4 and 7
 

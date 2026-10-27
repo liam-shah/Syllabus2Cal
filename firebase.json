@@ -1,0 +1,12 @@
+{
+  "hosting": {
+    "public": "frontend/dist",
+    "ignore": ["firebase.json", "**/.*"],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "run": { "serviceId": "api", "region": "us-west1" }
+      }
+    ]
+  }
+}

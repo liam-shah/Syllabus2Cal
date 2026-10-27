@@ -64,7 +64,7 @@ Region: **us-west1 (Oregon)** for Cloud Run and Cloud Tasks, with Neon in **AWS 
 - [ ] Review with human
 
 ### Phase 3: First deploy (by hand)
-- [ ] Task 8: Production container, with the backend served under `/api`
+- [x] Task 8: Production container, with the backend served under `/api`
 - [ ] Task 9: Cloud setup runbook, and the first deploy by hand
 
 ### Checkpoint 3: Live smoke test (on your phone)

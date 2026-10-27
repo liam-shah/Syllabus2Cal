@@ -1,0 +1,15 @@
+# Never send secrets or local data into the image.
+.env
+.env.*
+!.env.example
+client_secret.json
+*.db
+
+# Not needed to run the app.
+.venv/
+**/__pycache__/
+.pytest_cache/
+.coverage
+tests/
+Dockerfile
+.dockerignore
