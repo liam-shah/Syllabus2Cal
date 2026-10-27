@@ -355,7 +355,7 @@ Also answer: does `*.web.app` qualify as the homepage for Google verification?
 **Acceptance criteria:**
 - [ ] The live URL serves the app and you can sign in with Google
 - [ ] Every command in `docs/deploy.md` is the one that was actually run (no secrets in the repo)
-- [ ] The verification-domain question is answered in `docs/deploy.md`
+- [x] The verification-domain question is answered in `docs/deploy.md` (likely no: plan on a custom domain before submitting)
 
 **Verification:**
 - [ ] Manual check: the full flow on your phone (see Checkpoint 3)
