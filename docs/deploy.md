@@ -202,7 +202,8 @@ On your phone, at `https://<project-id>.web.app`:
 - [ ] Redeploy (part 7) while an upload is extracting: it finishes, or fails with a message, and is never stuck
 - [ ] Two tabs press Sync at the same time: each event appears once
 - [ ] A scanned PDF gets the "no text" message; a second test user can sign in
-- [ ] `curl -X POST "$SERVICE_URL/internal/extractions/1"` returns **401**
+- [ ] `curl -X POST -d '' "$SERVICE_URL/internal/extractions/1"` returns **401** (`-d ''` sends a
+  `Content-Length`; without one, Google's front end answers 411 before the app sees the request)
 - [ ] The billing page shows about $0, and the budget alert is listed
 
 If uploads stay "processing": check *Cloud Tasks → extractions* for failed attempts, then
