@@ -1,18 +1,18 @@
-fastapi
-uvicorn[standard]
-python-multipart
-itsdangerous
-pydantic
-pydantic-settings
-tzdata
-sqlalchemy
-alembic
-psycopg[binary]
-pdfplumber
-anthropic
-google-auth
-google-auth-oauthlib
-google-api-python-client
-pytest
-pytest-cov
-httpx
+# Exact versions, as tested. Upgrade one package at a time, re-running both test suites.
+fastapi==0.141.1
+# Pinned directly: app.main.ApiPrefix relies on how Starlette matches routes after root_path.
+starlette==1.6.0
+uvicorn[standard]==0.53.0
+python-multipart==0.0.32
+itsdangerous==2.2.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+tzdata==2026.5
+sqlalchemy==2.0.54
+alembic==1.20.0
+psycopg[binary]==3.3.6
+pdfplumber==0.11.10
+anthropic==1.7.0
+google-auth==2.58.0
+google-auth-oauthlib==1.4.1
+google-api-python-client==2.200.0
