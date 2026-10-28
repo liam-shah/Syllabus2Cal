@@ -293,4 +293,5 @@ def test_a_pdf_with_no_text_is_refused_before_saving(db, user):
 
 def test_the_real_schedule_fits_comfortably_under_the_default_text_limit():
     # Guards the default: if this fails, the limit would refuse real syllabi.
-    assert len(pdf_extraction.extract_text(PDF_BYTES)) * 10 < UploadLimits().max_text_chars
+    text, _ = pdf_extraction.extract(PDF_BYTES, UploadLimits().max_text_chars)
+    assert len(text) * 10 < UploadLimits().max_text_chars

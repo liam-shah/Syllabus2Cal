@@ -28,6 +28,15 @@ def test_unreadable_time_is_added_after_existing_description():
     assert draft.description == "Thursday lecture\nEnd time from PDF: late"
 
 
+@pytest.mark.parametrize("times", [{"start_time": "14:00", "end_time": "13:00"}, {"end_time": "15:00"},
+                                   {"start_time": "2pm", "end_time": "15:00"}])
+def test_an_end_time_the_edit_rules_would_reject_moves_to_description(times):
+    # Otherwise every later edit (even unticking) would fail the end-after-start check.
+    draft = make_draft(**times)
+    assert draft.end_time is None
+    assert draft.description.endswith(f"End time from PDF: {times['end_time']}")
+
+
 def test_start_date_is_parsed_from_iso_text():
     # Claude's JSON has dates as text; EventDraft turns them into real date objects.
     draft = EventDraft.model_validate({"title": "Lab", "start_date": "2026-09-21", "date_is_approximate": True})

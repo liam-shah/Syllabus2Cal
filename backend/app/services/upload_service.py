@@ -61,10 +61,9 @@ class UploadService:
         """Check the upload and save it as 'processing'. Quick: Claude isn't called here."""
         # Raises PDFExtractionError (-> 400) before anything is saved. Unreadable files are
         # never saved, so they don't use up the daily allowance.
-        raw_text = pdf_extraction.extract_text(pdf_bytes)
+        # Tables are read now, while we have the PDF: the extraction job only gets the upload's id.
+        raw_text, tables = pdf_extraction.extract(pdf_bytes, self._limits.max_text_chars)
         self._check_text_size(raw_text)
-        # Read now, while we have the PDF: the extraction job only gets the upload's id.
-        tables = pdf_extraction.extract_tables(pdf_bytes)
         self._check_daily_limit()
 
         upload = Upload(user=self._user, filename=filename, raw_text=raw_text, tables_json=json.dumps(tables),
@@ -115,6 +114,9 @@ class UploadService:
     def _check_daily_limit(self) -> None:
         # Every saved upload counts, including failed and still-processing ones: each one is a
         # Claude call that was (or is being) paid for. The uploads table already records this, so no separate counter is needed.
+        # Lock the user's row first (until start_upload commits), so parallel uploads count one at
+        # a time instead of all reading the same total. SQLite ignores this; it's local only.
+        self._db.scalar(select(User).where(User.id == self._user.id).with_for_update())
         window_start = utc_now() - LIMIT_WINDOW
         recent = list(self._db.scalars(
             select(Upload.created_at)
@@ -143,8 +145,9 @@ class UploadService:
             )
         if len(raw_text) > self._limits.max_text_chars:
             raise InvalidInputError(
-                f"This PDF has too much text to be a course schedule ({len(raw_text):,} characters; "
-                f"the limit is {self._limits.max_text_chars:,}). Try a PDF with just the schedule pages."
+                # "more than": extraction stopped at the limit, so the full length isn't known.
+                f"This PDF has too much text to be a course schedule (more than the limit of "
+                f"{self._limits.max_text_chars:,} characters). Try a PDF with just the schedule pages."
             )
 
     def get_upload(self, upload_id: int) -> Upload:

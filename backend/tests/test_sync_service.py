@@ -1,14 +1,14 @@
 """SyncService with a fake calendar: no network, no patching - the fake is passed in."""
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.domain import EventDraft, EventStatus, UploadStatus
 from app.errors import ConflictError, NotFoundError
-from app.integrations.google_calendar import GoogleAuthError, GoogleCalendarError
+from app.integrations.google_calendar import BATCH_SIZE, GoogleAuthError, GoogleCalendarError
 from app.models import ExtractedEvent, Upload, User
 from app.services.sync_service import GoogleNotConnectedError, SyncService
 from app.services.upload_service import UploadService
@@ -19,7 +19,7 @@ def add_upload(db, user, *events: tuple[str, bool, EventStatus]) -> Upload:
     """events: (title, included, status)"""
     upload = Upload(user=user, filename="test.pdf", raw_text="...", status=UploadStatus.EXTRACTED)
     for day, (title, included, status) in enumerate(events, start=1):
-        row = ExtractedEvent.from_draft(EventDraft(title=title, start_date=date(2026, 9, day), date_is_approximate=False))
+        row = ExtractedEvent.from_draft(EventDraft(title=title, start_date=date(2026, 9, 1) + timedelta(days=day), date_is_approximate=False))
         row.included, row.status = included, status
         upload.events.append(row)
     db.add(upload)
@@ -95,14 +95,28 @@ def test_one_failed_event_does_not_stop_the_others(db, connected_user):
 
 
 def test_a_rejected_sign_in_stops_the_sync_but_keeps_what_already_worked(db, connected_user):
-    upload = add_upload(db, connected_user, ("First", True, PENDING), ("Second", True, PENDING), ("Third", True, PENDING))
-    calendar = FakeCalendar(fail={"Second": GoogleAuthError("reconnect Google Calendar")})
+    upload = add_upload(db, connected_user, *[(f"Event {n}", True, PENDING) for n in range(BATCH_SIZE + 1)])
+    calendar = FakeCalendar(fail={"Event 1": GoogleAuthError("reconnect Google Calendar")})
 
     with pytest.raises(GoogleAuthError):
         make_service(db, connected_user, calendar).sync_upload(upload.id, TORONTO)
 
-    # "First" is recorded as synced (committed straight away); nothing after the failure was tried.
-    assert statuses(db, upload) == {"First": EventStatus.SYNCED, "Second": PENDING, "Third": PENDING}
+    # The first batch's successes are recorded; the refused event is left to retry after
+    # reconnecting (not marked failed), and the next batch was never sent.
+    result = statuses(db, upload)
+    assert (result["Event 0"], result["Event 1"], result[f"Event {BATCH_SIZE}"]) == (EventStatus.SYNCED, PENDING, PENDING)
+    assert calendar.batch_sizes == [BATCH_SIZE]
+
+
+def test_a_big_upload_is_sent_in_batches(db, connected_user):
+    # One request per event would pass Firebase Hosting's 60-second limit on a big schedule.
+    upload = add_upload(db, connected_user, *[(f"Event {n}", True, PENDING) for n in range(BATCH_SIZE + 1)])
+    calendar = FakeCalendar()
+
+    make_service(db, connected_user, calendar).sync_upload(upload.id, TORONTO)
+
+    assert calendar.batch_sizes == [BATCH_SIZE, 1]
+    assert set(statuses(db, upload).values()) == {EventStatus.SYNCED}
 
 
 def test_a_retry_after_a_crash_reuses_the_same_event_id(db, connected_user):

@@ -131,7 +131,7 @@ classDiagram
     }
     class GoogleCalendarClient {
         +from_credentials_json(json)$ GoogleCalendarClient
-        +insert_event(draft, event_id) str
+        +insert_events(drafts_and_ids, time_zone) list
         +credentials_json str
     }
     class EventDraft {
@@ -261,22 +261,25 @@ Details that matter:
 
 ## How a sync works
 
-`SyncService` sends every event that's ticked and not yet synced, one at a time:
+`SyncService` sends every event that's ticked and not yet synced, in batches of up to 50 per
+request (one request per event would pass Firebase Hosting's 60-second limit on a big schedule):
 
 ```mermaid
 sequenceDiagram
     participant S as SyncService
     participant D as Database
     participant G as Google Calendar
-    loop each ticked, not-yet-synced event
-        S->>D: save its sync_key (chosen once, reused on every retry)
-        S->>G: insert the event with id = sync_key
-        alt created, or "duplicate" (it was created by an earlier attempt)
-            S->>D: mark SYNCED + save Google's event id
-        else Google rejected this event
-            S->>D: mark SYNC_FAILED + the reason, then carry on
-        else Google rejected the sign-in (401)
-            S-->>S: stop - every other event would fail the same way
+    loop each batch of up to 50 ticked, not-yet-synced events
+        S->>D: save each event's sync_key (chosen once, reused on every retry)
+        S->>G: one batch request: insert each event with id = sync_key
+        loop each event's answer
+            alt created, or "duplicate" (it was created by an earlier attempt)
+                S->>D: mark SYNCED + save Google's event id
+            else Google rejected this event
+                S->>D: mark SYNC_FAILED + the reason
+            else Google rejected the sign-in (401)
+                S-->>S: leave it unchanged, and stop after this batch
+            end
         end
     end
 ```

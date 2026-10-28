@@ -27,7 +27,7 @@ SYSTEM_PROMPT = (
     "(e.g. a 'Tuesday' column), check that the year puts the dates on those weekdays."
 )
 
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-5-5"
 
 
 class ExtractionResult(BaseModel):

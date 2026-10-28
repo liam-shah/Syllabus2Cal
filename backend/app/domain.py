@@ -70,10 +70,17 @@ class EventDraft(BaseModel):
         for field_name, label in (("start_time", "Start"), ("end_time", "End")):
             value = getattr(self, field_name)
             if value is not None and not TIME_OF_DAY.match(value):
-                note = f"{label} time from PDF: {value}"
-                self.description = f"{self.description}\n{note}" if self.description else note
-                setattr(self, field_name, None)
+                self._move_time_to_description(field_name, label, value)
+        # An end with no start, or before the start, breaks the rule every edit checks
+        # (ExtractedEvent._check_times) - the event couldn't even be unticked. Same treatment.
+        if self.end_time is not None and (self.start_time is None or self.end_time < self.start_time):
+            self._move_time_to_description("end_time", "End", self.end_time)
         return self
+
+    def _move_time_to_description(self, field_name: str, label: str, value: str) -> None:
+        note = f"{label} time from PDF: {value}"
+        self.description = f"{self.description}\n{note}" if self.description else note
+        setattr(self, field_name, None)
 
 
 class EventUpdate(BaseModel):

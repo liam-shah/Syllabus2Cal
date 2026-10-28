@@ -7,7 +7,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError
-from app.integrations.google_calendar import GoogleAuthError, GoogleCalendarClient, GoogleCalendarError
+from app.integrations.google_calendar import BATCH_SIZE, GoogleAuthError, GoogleCalendarClient, GoogleCalendarError
 from app.models import ExtractedEvent, User
 from app.services.upload_service import UploadService
 
@@ -21,9 +21,9 @@ class GoogleNotConnectedError(ConflictError):
 
 
 class SyncService:
-    """Sends an upload's ticked events to Google Calendar, one at a time.
+    """Sends an upload's ticked events to Google Calendar, up to BATCH_SIZE per request.
 
-    Unlike an upload (one all-or-nothing transaction), every event is committed as soon as
+    Unlike an upload (one all-or-nothing transaction), every batch is committed as soon as
     Google answers. A database rollback can't delete an event that's already in Google
     Calendar, so the database has to record each success immediately - otherwise a retry
     after a crash would send those events again.
@@ -53,26 +53,30 @@ class SyncService:
 
         calendar = self._open_calendar(self._user.google_credentials_json)  # may refresh the token
         try:
-            for event in events:
-                self._sync_one(calendar, event, time_zone)
+            for start in range(0, len(events), BATCH_SIZE):
+                self._sync_batch(calendar, events[start:start + BATCH_SIZE], time_zone)
         finally:
             # Even if we stopped early, keep the refreshed token so the next sync can use it.
             self._user.google_credentials_json = calendar.credentials_json
             self._db.commit()
         return events
 
-    def _sync_one(self, calendar: GoogleCalendarClient, event: ExtractedEvent, time_zone: str) -> None:
-        # Save the key *before* contacting Google: if we crash after Google creates the event
-        # but before we record it, the retry sends the same key and can't create a duplicate.
-        sync_key = self._claim_sync_key(event)
+    def _sync_batch(self, calendar: GoogleCalendarClient, events: list[ExtractedEvent], time_zone: str) -> None:
+        # Save the keys *before* contacting Google: if we crash after Google creates the events
+        # but before we record them, the retry sends the same keys and can't create duplicates.
+        keyed = [(event.to_draft(), self._claim_sync_key(event)) for event in events]
 
-        try:
-            event.mark_synced(calendar.insert_event(event.to_draft(), sync_key, time_zone))
-        except GoogleAuthError:
-            raise  # every remaining event would fail the same way, so stop and say "reconnect"
-        except GoogleCalendarError as e:
-            event.mark_sync_failed(str(e))  # one bad event shouldn't stop the others
+        auth_error = None
+        for event, outcome in zip(events, calendar.insert_events(keyed, time_zone), strict=True):
+            if isinstance(outcome, GoogleAuthError):
+                auth_error = outcome  # left as it was: reconnecting and syncing again retries it
+            elif isinstance(outcome, GoogleCalendarError):
+                event.mark_sync_failed(str(outcome))  # one bad event shouldn't stop the others
+            else:
+                event.mark_synced(outcome)
         self._db.commit()
+        if auth_error is not None:
+            raise auth_error  # every later batch would fail the same way, so stop and say "reconnect"
 
     def _claim_sync_key(self, event: ExtractedEvent) -> str:
         """The ID to give this event in Google Calendar - chosen once, then reused on every retry.

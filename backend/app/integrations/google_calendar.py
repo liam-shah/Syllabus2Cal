@@ -89,6 +89,24 @@ def is_duplicate_id_error(error: HttpError) -> bool:
     )
 
 
+# The most inserts to send in one batch request (Google's recommended maximum).
+BATCH_SIZE = 50
+
+
+def _outcome(event_id: str, response: dict | None, error: HttpError | None) -> str | GoogleCalendarError:
+    """One insert's result: the event's ID, or why Google refused it."""
+    if error is None:
+        return response["id"]
+    # Google refuses a second event with an ID that already exists (409 "duplicate"). The only
+    # way that happens here is a retry of an attempt that actually succeeded, so that refusal
+    # means the event is already in the calendar - which is exactly the goal.
+    if is_duplicate_id_error(error):
+        return event_id
+    if error.status_code == 401:
+        return GoogleAuthError("Google rejected the saved sign-in - reconnect Google Calendar and sync again")
+    return GoogleCalendarError(f"Google Calendar rejected this event ({error.status_code}: {error.reason})")
+
+
 class GoogleCalendarClient:
     """A connection to one user's primary Google Calendar.
 
@@ -109,24 +127,31 @@ class GoogleCalendarClient:
         """The (possibly refreshed) credentials, to save back onto the user afterwards."""
         return self._credentials.to_json()
 
-    def insert_event(self, event: EventDraft, event_id: str, time_zone: str) -> str:
-        """Create the event with *our* ID and return it. Safe to call twice with the same ID.
+    def insert_events(self, events: list[tuple[EventDraft, str]], time_zone: str) -> list[str | GoogleCalendarError]:
+        """Create up to BATCH_SIZE (event, our ID) pairs in one HTTP request, instead of one each:
+        a big schedule would otherwise pass Firebase Hosting's 60-second limit on a request.
 
-        Google refuses a second event with an ID that already exists (409 "duplicate"). The
-        only way that happens here is a retry of an attempt that actually succeeded, so that
-        refusal means the event is already in the calendar - which is exactly the goal.
+        Returns each event's outcome, in order: its ID, or the error Google gave for it (a
+        GoogleAuthError if Google no longer accepts the sign-in). Safe to repeat with the same IDs.
         """
-        body = build_event_body(event, time_zone) | {"id": event_id}
+        outcomes: list[str | GoogleCalendarError | None] = [None] * len(events)
+
+        def record(request_id: str, response: dict | None, error: HttpError | None) -> None:
+            index = int(request_id)
+            outcomes[index] = _outcome(events[index][1], response, error)
+
+        batch = self._service.new_batch_http_request(callback=record)
+        for index, (event, event_id) in enumerate(events):
+            body = build_event_body(event, time_zone) | {"id": event_id}
+            batch.add(self._service.events().insert(calendarId="primary", body=body), request_id=str(index))
         try:
-            created = self._service.events().insert(calendarId="primary", body=body).execute()
+            batch.execute()
+        except RefreshError:
+            # The access token ran out mid-sync and Google refused to renew it (access revoked).
+            return [GoogleAuthError("Google access expired or was revoked - reconnect Google Calendar and sync again")
+                    for _ in events]
         except HttpError as e:
-            if is_duplicate_id_error(e):
-                return event_id
-            if e.status_code == 401:
-                raise GoogleAuthError(
-                    "Google rejected the saved sign-in - reconnect Google Calendar and sync again"
-                ) from e
-            raise GoogleCalendarError(f"Google Calendar rejected this event ({e.status_code}: {e.reason})") from e
-        return created["id"]
+            return [_outcome(event_id, None, e) for _, event_id in events]  # the whole batch was refused
+        return outcomes
 
 

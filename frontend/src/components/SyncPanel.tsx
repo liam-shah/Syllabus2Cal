@@ -52,7 +52,7 @@ export default function SyncPanel({ events, onSync, isSyncing, lastResult, error
       {/* aria-live: screen readers announce progress and results when they appear. */}
       <div aria-live="polite" className="mt-2 text-sm">
         {isSyncing && (
-          <p className="text-slate-600">Adding events to Google Calendar one at a time. This can take about 30 seconds.</p>
+          <p className="text-slate-600">Adding events to Google Calendar. This can take a few seconds.</p>
         )}
         {!isSyncing && error !== null && (
           <p role="alert" className="text-red-700">{error}</p>

@@ -3,6 +3,7 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
+from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from httplib2 import Response
 
@@ -24,51 +25,82 @@ def google_error(status: int, message: str, reason: str) -> HttpError:
     return HttpError(Response({"status": str(status)}), json.dumps(body).encode(), uri="https://www.googleapis.com/calendar/v3")
 
 
+class FakeBatch:
+    """Stands in for googleapiclient's BatchHttpRequest: answers each added request with
+    `result`, or with the error `raises`."""
+
+    def __init__(self, callback, result, raises):
+        self.callback, self.result, self.raises = callback, result, raises
+        self.request_ids: list[str] = []
+
+    def add(self, request, request_id):
+        self.request_ids.append(request_id)
+
+    def execute(self):
+        for request_id in self.request_ids:
+            self.callback(request_id, None if self.raises else self.result, self.raises)
+
+
 def client_whose_insert(result=None, raises: Exception | None = None):
-    """A GoogleCalendarClient whose (fake) Google API returns `result` or raises `raises`."""
+    """A GoogleCalendarClient whose (fake) Google API returns `result` or `raises` for each insert."""
     service = MagicMock()
-    execute = service.events.return_value.insert.return_value.execute
-    if raises is not None:
-        execute.side_effect = raises
-    else:
-        execute.return_value = result
+    service.new_batch_http_request.side_effect = lambda callback: FakeBatch(callback, result, raises)
     with patch("app.integrations.google_calendar.build", return_value=service):
         client = GoogleCalendarClient(credentials=MagicMock())
     return client, service
 
 
+def insert_one(client, event=LAB):
+    [outcome] = client.insert_events([(event, "abc12345")], TORONTO)
+    return outcome
+
+
 def test_insert_sends_our_event_id_to_google():
     client, service = client_whose_insert(result={"id": "abc12345"})
 
-    assert client.insert_event(LAB, "abc12345", TORONTO) == "abc12345"
+    assert insert_one(client) == "abc12345"
     body = service.events.return_value.insert.call_args.kwargs["body"]
     assert body["id"] == "abc12345"
     assert body["summary"] == "Lab L1"
 
 
+def test_events_are_sent_together_and_answered_in_order():
+    client, service = client_whose_insert(result={"id": "fromgoogle"})
+    second = EventDraft(title="Lab L2", start_date=date(2026, 9, 28), date_is_approximate=False)
+
+    assert client.insert_events([(LAB, "aaaaa1"), (second, "aaaaa2")], TORONTO) == ["fromgoogle", "fromgoogle"]
+    assert service.new_batch_http_request.call_count == 1  # one HTTP request for both
+
+
 def test_a_duplicate_id_means_the_event_is_already_there():
     client, _ = client_whose_insert(raises=google_error(409, "The requested identifier already exists.", "duplicate"))
-    assert client.insert_event(LAB, "abc12345", TORONTO) == "abc12345"
+    assert insert_one(client) == "abc12345"
 
 
 def test_other_conflicts_are_not_mistaken_for_success():
     client, _ = client_whose_insert(raises=google_error(409, "Something else conflicted.", "conflict"))
-    with pytest.raises(GoogleCalendarError):
-        client.insert_event(LAB, "abc12345", TORONTO)
+    assert isinstance(insert_one(client), GoogleCalendarError)
 
 
 def test_a_rejected_sign_in_is_its_own_error():
     client, _ = client_whose_insert(raises=google_error(401, "Invalid Credentials", "authError"))
-    with pytest.raises(GoogleAuthError, match="reconnect"):
-        client.insert_event(LAB, "abc12345", TORONTO)
+    outcome = insert_one(client)
+    assert isinstance(outcome, GoogleAuthError)
+    assert "reconnect" in str(outcome)
+
+
+def test_a_token_google_will_not_renew_mid_sync_is_a_sign_in_error():
+    client, service = client_whose_insert(result={"id": "abc12345"})
+    service.new_batch_http_request.side_effect = None
+    service.new_batch_http_request.return_value.execute.side_effect = RefreshError("invalid_grant")
+    assert isinstance(insert_one(client), GoogleAuthError)
 
 
 def test_other_rejections_give_a_short_readable_reason():
     client, _ = client_whose_insert(raises=google_error(400, "Bad Request", "invalid"))
-    with pytest.raises(GoogleCalendarError) as caught:
-        client.insert_event(LAB, "abc12345", TORONTO)
-    assert not isinstance(caught.value, GoogleAuthError)
-    assert str(caught.value) == "Google Calendar rejected this event (400: Bad Request)"
+    outcome = insert_one(client)
+    assert not isinstance(outcome, GoogleAuthError)
+    assert str(outcome) == "Google Calendar rejected this event (400: Bad Request)"
 
 
 def test_all_day_event_ends_the_next_day():
@@ -95,7 +127,7 @@ def test_timed_event_defaults_to_one_hour_in_the_given_time_zone():
 def test_insert_sends_the_time_zone_to_google():
     client, service = client_whose_insert(result={"id": "abc12345"})
     timed = EventDraft(title="Lecture", start_date=date(2026, 9, 22), start_time="14:00", date_is_approximate=False)
-    client.insert_event(timed, "abc12345", TORONTO)
+    insert_one(client, timed)
     body = service.events.return_value.insert.call_args.kwargs["body"]
     assert body["start"]["timeZone"] == "America/Toronto"
 
