@@ -13,6 +13,7 @@ from app.integrations.llm_extraction import (
 
 MIDTERM = EventDraft(title="Midterm 1", start_date=date(2026, 10, 8), date_is_approximate=False,
                      source_snippet="Oct 08 Midterm 1")
+UPLOADED_ON = date(2026, 10, 27)
 
 
 def mock_stream(mock_client_cls, get_final_message):
@@ -27,9 +28,26 @@ def test_extract_events_returns_event_drafts():
 
     with patch("app.integrations.llm_extraction.anthropic.Anthropic") as mock_client_cls:
         mock_stream(mock_client_cls, lambda: fake_response)
-        events = extract_events("...some raw text...", [])
+        events = extract_events("...some raw text...", [], filename="schedule.pdf", uploaded_on=UPLOADED_ON)
 
     assert events == [MIDTERM]
+
+
+def test_claude_is_told_the_file_name_and_upload_date():
+    # Schedules often never state their year (EOSC 211's says only "Fall" and "Sep 08"); the
+    # year can be in the file name, and the upload date tells Claude which term is current.
+    fake_response = MagicMock()
+    fake_response.parsed_output = ExtractionResult(events=[MIDTERM])
+
+    with patch("app.integrations.llm_extraction.anthropic.Anthropic") as mock_client_cls:
+        mock_stream(mock_client_cls, lambda: fake_response)
+        extract_events("Sep 08 Imagine UBC Day", [], filename="EOSC211_2026_Schedule.pdf", uploaded_on=UPLOADED_ON)
+
+    request = mock_client_cls.return_value.messages.stream.call_args.kwargs
+    message = request["messages"][0]["content"]
+    assert "FILE NAME: EOSC211_2026_Schedule.pdf" in message
+    assert "UPLOADED ON: 2026-10-27" in message
+    assert "FILE NAME" in request["system"] and "UPLOADED ON" in request["system"]  # the prompt says how to use them
 
 
 def test_extract_events_raises_when_response_unparseable():
@@ -40,7 +58,7 @@ def test_extract_events_raises_when_response_unparseable():
     with patch("app.integrations.llm_extraction.anthropic.Anthropic") as mock_client_cls:
         mock_stream(mock_client_cls, lambda: fake_response)
         with pytest.raises(LLMExtractionError, match="max_tokens"):
-            extract_events("...some raw text...", [])
+            extract_events("...some raw text...", [], filename="schedule.pdf", uploaded_on=UPLOADED_ON)
 
 
 def test_extract_events_raises_when_reply_is_cut_off():
@@ -51,7 +69,7 @@ def test_extract_events_raises_when_reply_is_cut_off():
     with patch("app.integrations.llm_extraction.anthropic.Anthropic") as mock_client_cls:
         mock_stream(mock_client_cls, cut_off_reply)
         with pytest.raises(LLMExtractionError, match="cut off"):
-            extract_events("...some raw text...", [])
+            extract_events("...some raw text...", [], filename="schedule.pdf", uploaded_on=UPLOADED_ON)
 
 
 def test_format_tables_joins_cells_and_cleans_them():

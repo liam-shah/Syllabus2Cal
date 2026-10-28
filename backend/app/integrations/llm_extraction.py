@@ -1,6 +1,8 @@
 """Sends a PDF's text and tables to Claude and gets back structured events
 using structured outputs (a Pydantic model describing the JSON shape)."""
 
+from datetime import date
+
 import anthropic
 from pydantic import BaseModel, ValidationError
 
@@ -19,7 +21,10 @@ SYSTEM_PROMPT = (
     "If an item only belongs to a week with no day given, set start_date to the first day of that week, "
     "set date_is_approximate to true, and do not invent a due date. Otherwise set date_is_approximate to false. "
     "For every event, copy the exact source text you used into source_snippet -- do not shorten it with '...'. "
-    "If the year is not stated but the term is inferable (e.g. 'Fall 2026'), use that year for the dates."
+    "Year: use the year the PDF states (e.g. 'Fall 2026'). Many schedules never state it, so if this one "
+    "doesn't, use a year in the FILE NAME (e.g. 'EOSC211_2026_Schedule.pdf'). Failing that, choose the year "
+    "that makes this the current or upcoming term as of UPLOADED ON. Either way, when the PDF names weekdays "
+    "(e.g. a 'Tuesday' column), check that the year puts the dates on those weekdays."
 )
 
 MODEL = "claude-sonnet-5"
@@ -47,11 +52,17 @@ def format_tables(tables: list[list[list[str | None]]]) -> str:
     return "\n\n".join(formatted_tables)
 
 
-def extract_events(raw_text: str, tables: list[list[list[str | None]]]) -> list[EventDraft]:
+def extract_events(
+    raw_text: str, tables: list[list[list[str | None]]], *, filename: str, uploaded_on: date
+) -> list[EventDraft]:
+    """filename and uploaded_on let Claude work out the year when the PDF doesn't state it."""
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     tables_text = format_tables(tables) or "(no tables found)"
-    user_message = f"RAW TEXT:\n{raw_text}\n\nTABLES:\n{tables_text}"
+    user_message = (
+        f"FILE NAME: {filename}\nUPLOADED ON: {uploaded_on.isoformat()}\n\n"
+        f"RAW TEXT:\n{raw_text}\n\nTABLES:\n{tables_text}"
+    )
 
     # Streaming lets us allow a large max_tokens (thinking + ~60 events) without the
     # SDK's non-streaming timeout limit. max_tokens is a cap, not what you're billed.

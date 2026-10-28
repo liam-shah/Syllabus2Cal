@@ -80,7 +80,9 @@ class UploadService:
         """Run Claude on a 'processing' upload and save the result. Runs in the background."""
         try:
             tables = json.loads(upload.tables_json or "[]")  # older uploads saved no tables
-            drafts = llm_extraction.extract_events(upload.raw_text, tables)
+            drafts = llm_extraction.extract_events(
+                upload.raw_text, tables, filename=upload.filename, uploaded_on=upload.created_at.date()
+            )
         except llm_extraction.LLMExtractionError as e:
             # Keep the failed attempt (with its raw_text) so it can be inspected later.
             self._mark_failed(upload, str(e))

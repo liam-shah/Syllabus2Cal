@@ -77,6 +77,8 @@ def test_extracting_saves_the_events_and_marks_it_extracted(db, user):
 
     raw_text, tables = mock_extract.call_args.args  # Claude was given the real PDF's text and tables
     assert "Sep 14-18" in raw_text and len(tables) >= 1
+    # ...and what it needs to work out the year when the PDF doesn't state it.
+    assert mock_extract.call_args.kwargs == {"filename": "cpsc213.pdf", "uploaded_on": upload.created_at.date()}
 
 
 def test_get_events_returns_them_sorted_by_date(db, user):
