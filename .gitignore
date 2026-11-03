@@ -23,3 +23,6 @@ private/
 graphify-out/
 # Firebase CLI deploy cache
 .firebase/
+
+# Architecture notes - kept locally, not on GitHub
+ARCHITECTURE.md
